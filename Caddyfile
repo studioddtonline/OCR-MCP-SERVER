@@ -1,0 +1,7 @@
+# Remote MCP + OAuth 2.0 Authorization Code / PKCE
+# All OAuth discovery, registration, authorization, token, and MCP routes
+# must reach the same Node.js HTTP server.
+ddns.s13e.net {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:3001
+}

@@ -1,0 +1,26 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 3001,
+    "mcpPath": "/mcp",
+    "publicBaseUrl": "https://ddns.s13e.net"
+  },
+  "auth": {
+    "mode": "none"
+  },
+  "database": {
+    "path": "/absolute/path/to/your/ocr.sqlite",
+    "busyTimeoutMs": 500
+  },
+  "originalImages": {
+    "rootPath": "/mnt/original-books"
+  },
+  "ocrWrite": {
+    "enabled": false
+  },
+  "search": {
+    "defaultLimit": 20,
+    "maxLimit": 50,
+    "snippetLength": 160
+  }
+}

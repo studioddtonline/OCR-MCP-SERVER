@@ -1,0 +1,47 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 3001,
+    "publicBaseUrl": "https://ddns.s13e.net",
+    "mcpPath": "/mcp"
+  },
+  "auth": {
+    "mode": "oauth"
+  },
+  "oauth": {
+    "databasePath": "/var/lib/ocr-mcp/oauth.sqlite",
+    "allowedRedirectUris": [
+      "https://claude.ai/api/mcp/auth_callback",
+      "https://claude.com/api/mcp/auth_callback",
+      "https://grok.com/connectors-oauth-exchange-code/",
+      "https://grok.com/connectors-oauth-exchange-code",
+      "https://chatgpt.com/connector_platform_oauth_redirect"
+    ],
+    "cimdAllowedHosts": [
+      "claude.ai",
+      "claude.com",
+      "grok.com",
+      "x.ai",
+      "chatgpt.com",
+      "openai.com"
+    ]
+  },
+  "staticTokens": {
+    "databasePath": "/var/lib/ocr-mcp/static-tokens.sqlite"
+  },
+  "database": {
+    "path": "/absolute/path/to/your/ocr.sqlite",
+    "busyTimeoutMs": 500
+  },
+  "originalImages": {
+    "rootPath": "/mnt/original-books"
+  },
+  "ocrWrite": {
+    "enabled": false
+  },
+  "search": {
+    "defaultLimit": 20,
+    "maxLimit": 50,
+    "snippetLength": 160
+  }
+}
