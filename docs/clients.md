@@ -71,11 +71,39 @@ curl -sS https://<公開ホスト>/mcp \
 
 ### OCR
 
-- `search_ocr`: OCR 本文のフレーズ検索、ラベル／レビュー状態による絞り込み、上限付きの結果数とオフセット。深いページでは `afterId` に直前ページの `nextAfterId` を渡すキーセット方式を推奨します。次ページがなければ `nextAfterId` は `null` です。`afterId` と正の `offset` は併用できません。
+`search_ocr` は単純な文字列と構造化クエリの両方を受け付けます。複合条件は次のように指定します。
+
+```json
+{
+  "query": {
+    "type": "or",
+    "nodes": [
+      {
+        "type": "and",
+        "nodes": [
+          { "type": "term", "value": "宮崎" },
+          { "type": "term", "value": "監督" }
+        ]
+      },
+      {
+        "type": "and",
+        "nodes": [
+          { "type": "term", "value": "ラピュタ" },
+          { "type": "not", "node": { "type": "term", "value": "劇場版" } }
+        ]
+      }
+    ]
+  }
+}
+```
+
+これは `(宮崎 AND 監督) OR (ラピュタ AND NOT 劇場版)` を意味します。`term` の文字数に応じ、1〜2 Unicode コードポイントは大文字小文字を区別する部分文字列検索、3文字以上は trigram フレーズ検索で評価します。クエリ木は最大32ノード・8階層、各 AND／OR は2〜16子条件で、NOT のみの検索は拒否されます。
+
+- `search_ocr`: OCR 本文の統合検索。`query` に文字列を指定すると単一語検索になり、1〜2 Unicode コードポイントは大文字小文字を区別するリテラル部分文字列検索、3文字以上は FTS5 trigram のフレーズ検索になります。`query` に構造化オブジェクトを指定すると AND／OR／NOT の複合検索ができます。構文は `term` (`{ "type": "term", "value": "宮崎" }`)、`and`／`or` (`{ "type": "and", "nodes": [...] }`)、`not` (`{ "type": "not", "node": {...} }`) です。任意の入れ子に対応しますが、最大32ノード・8階層・各AND/ORの子条件16個、各語500 Unicodeコードポイントまでです。NOTだけの検索は拒否します。各 `term` は長さに応じてリテラルまたは trigram で評価し、検索語を生の SQL／FTS5 構文として解釈しません。`label`／`reviewed` は式全体に適用されます。結果は ID 順で、深いページでは `afterId` に直前ページの `nextAfterId` を渡すキーセット方式を推奨します。`afterId` と正の `offset` は併用できません。次ページがなければ `nextAfterId` は `null` です。
 - `get_ocr_record`: ID によるレコード取得。OCR 本文の返却長を制限できます。
 - `list_source_labels`: 書籍ラベルと件数の一覧。取得上限は SQL 側で適用され、既定値は100件です。
 - `get_ocr_stats`: 総件数とレビュー状態別件数。
-- `update_ocr_text`: `ocrWrite.enabled: true` の場合のみ公開。`ocr:write` が必要で、未レビュー行の OCR 本文全体を置き換えます。`reviewed != 0` の行は変更できません。
+- `update_ocr_text`: `ocrWrite.enabled: true` の場合のみ公開。`ocr:write` が必要で、未レビュー行の OCR 本文全体を置き換えます。`reviewed IS NOT 0` の行は変更できません。
 
 ### オリジナル画像
 

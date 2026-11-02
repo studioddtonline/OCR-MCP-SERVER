@@ -14,6 +14,7 @@ import { TokenStore } from "../../auth/token-store.js";
 import { SCOPE_WRITE } from "../../auth/scopes.js";
 import { startHttpServer } from "../../http/server.js";
 import { createMcpHttpHandler } from "../../mcp/http-handler.js";
+import { createTestMcpRuntime } from "../../../test/support/mcp-runtime.js";
 import type { AppConfig } from "../../config/types.js";
 
 const headers = { "content-type": "application/json", accept: "application/json, text/event-stream" };
@@ -38,6 +39,12 @@ test("update_ocr_text requires ocr:write and rejects reviewed rows through the r
     { id: 2, label: "Book A", fileName: "021.webp", text: "Unreviewed text", reviewed: 0 },
   ]);
   rawDb.exec(`
+    CREATE TRIGGER source_images_ai AFTER INSERT ON source_images BEGIN
+      INSERT INTO images_fts(rowid, ocr_text) VALUES (new.id, new.ocr_text);
+    END;
+    CREATE TRIGGER source_images_ad AFTER DELETE ON source_images BEGIN
+      INSERT INTO images_fts(images_fts, rowid, ocr_text) VALUES ('delete', old.id, old.ocr_text);
+    END;
     CREATE TRIGGER source_images_au AFTER UPDATE OF ocr_text ON source_images BEGIN
       INSERT INTO images_fts(images_fts, rowid, ocr_text) VALUES ('delete', old.id, old.ocr_text);
       INSERT INTO images_fts(rowid, ocr_text) VALUES (new.id, new.ocr_text);
@@ -58,7 +65,7 @@ test("update_ocr_text requires ocr:write and rejects reviewed rows through the r
   };
   const server = startHttpServer(
     config,
-    createMcpHttpHandler(new OcrRepository(readerDb), config, { repository: writer, log: () => undefined }),
+    createMcpHttpHandler(createTestMcpRuntime(new OcrRepository(readerDb), { ocrWrite: { repository: writer, log: () => undefined } }), config),
     { status: "ready", store: oauthStore, tokens },
   );
   await once(server, "listening");

@@ -1,15 +1,12 @@
 import { constants } from "node:fs";
-import { access, lstat, open, readdir, realpath, stat } from "node:fs/promises";
-import { Buffer } from "node:buffer";
+import { access, lstat, readdir, realpath, stat } from "node:fs/promises";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { ClientSafeError, isNotFoundError } from "../../shared/errors.js";
+import { ImageReadQueue } from "./image-read-queue.js";
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const STAT_CONCURRENCY = 16;
-const MAX_CONCURRENT_IMAGE_READS = 2;
-// MCP server instances are created per HTTP request, so this gate must be module-wide.
-let activeImageReads = 0;
 const BOOK_DIRECTORY_COLLATOR = new Intl.Collator(undefined, { sensitivity: "base" });
 const IMAGE_NAME_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
@@ -68,7 +65,15 @@ async function resolveBookDirectory(root: string, bookDirectory: string): Promis
 }
 
 export class OriginalImageRepository {
+  /** One read queue per repository; the Runtime owns a single repository for the process. */
+  private readonly readQueue = new ImageReadQueue();
+
   constructor(private readonly configuredRootPath: string | undefined) {}
+
+  /** Terminal: stops the image Worker and rejects pending and later image reads. */
+  close(): void {
+    this.readQueue.shutdown();
+  }
 
   private async root(): Promise<string> {
     if (!this.configuredRootPath) {
@@ -133,59 +138,13 @@ export class OriginalImageRepository {
     return { bookDirectory, images, returned: images.length, limit, offset, nextOffset };
   }
 
-  async getImage(bookDirectory: string, fileName: string): Promise<{ data: string; mimeType: string; sizeBytes: number; bookDirectory: string; fileName: string }> {
-    if (activeImageReads >= MAX_CONCURRENT_IMAGE_READS) {
-      throw new ClientSafeError("Image retrieval is temporarily busy; retry shortly");
-    }
-    activeImageReads += 1;
-    try {
-      return await this.readImage(bookDirectory, fileName);
-    } finally {
-      activeImageReads -= 1;
-    }
-  }
-
-  private async readImage(bookDirectory: string, fileName: string): Promise<{ data: string; mimeType: string; sizeBytes: number; bookDirectory: string; fileName: string }> {
+  async getImage(bookDirectory: string, fileName: string, signal?: AbortSignal): Promise<{ data: string; mimeType: string; sizeBytes: number; bookDirectory: string; fileName: string }> {
+    // Reject malformed names before occupying a queue slot. The Worker repeats all path checks
+    // immediately before opening the file; these checks are only early input validation.
     assertSimpleName(bookDirectory, "book directory");
     assertSimpleName(fileName, "image file name");
-    const mimeType = mimeTypeFor(fileName);
-    const root = await this.root();
-    const actualBookPath = await resolveBookDirectory(root, bookDirectory);
-    const imagePath = join(actualBookPath, fileName);
-    const notFound = () => new ClientSafeError(`Image file not found: ${fileName}`);
-    let fileInfo;
-    try { fileInfo = await lstat(imagePath); }
-    catch (error) { throw isNotFoundError(error) ? notFound() : error; }
-    if (!fileInfo.isFile() || fileInfo.isSymbolicLink()) throw notFound();
-    const actualImagePath = await realpath(imagePath);
-    if (!isInside(actualBookPath, actualImagePath)) throw new ClientSafeError("Image path resolves outside the book directory");
-    if (fileInfo.size > MAX_IMAGE_BYTES) throw new ClientSafeError(`Image exceeds the ${MAX_IMAGE_BYTES} byte size limit`);
-    const handle = await open(actualImagePath, "r");
-    let bytes: Buffer;
-    try {
-      const openedInfo = await handle.stat();
-      if (!openedInfo.isFile()) throw notFound();
-      if (openedInfo.size > MAX_IMAGE_BYTES) throw new ClientSafeError(`Image exceeds the ${MAX_IMAGE_BYTES} byte size limit`);
-      // Read into one size-bounded buffer to avoid retaining both chunk buffers and a concatenated copy.
-      const expectedSize = openedInfo.size;
-      const buffer = Buffer.allocUnsafe(expectedSize);
-      let total = 0;
-      while (total < expectedSize) {
-        const { bytesRead } = await handle.read(buffer, total, expectedSize - total, total);
-        if (bytesRead === 0) break;
-        total += bytesRead;
-      }
-      const extra = Buffer.allocUnsafe(1);
-      const growth = await handle.read(extra, 0, 1, total);
-      if (growth.bytesRead > 0) {
-        if (total >= MAX_IMAGE_BYTES) throw new ClientSafeError(`Image exceeds the ${MAX_IMAGE_BYTES} byte size limit`);
-        throw new ClientSafeError("Image changed while being read; retry the request");
-      }
-      bytes = buffer.subarray(0, total);
-    } finally {
-      await handle.close();
-    }
-    return { data: bytes.toString("base64"), mimeType, sizeBytes: bytes.byteLength, bookDirectory, fileName };
+    mimeTypeFor(fileName);
+    return this.readQueue.enqueue(this.configuredRootPath, bookDirectory, fileName, signal);
   }
 }
 

@@ -1,7 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
 import { accessSync, constants } from "node:fs";
 import { ClientSafeError, describeForLog } from "../../shared/errors.js";
-import { validateOcrSchema } from "./sqlite.js";
+import { validateOcrSchema, validateOcrWriteTriggers } from "./sqlite.js";
+import { isReviewedFlag, reviewedSqlPredicate } from "./reviewed.mjs";
 
 export const MAX_OCR_TEXT_CODE_UNITS = 20_000;
 export const MAX_OCR_TEXT_BYTES = 64 * 1024;
@@ -30,6 +31,17 @@ export interface OcrWriteSuccess {
   historyId?: number;
   changedAt?: string;
 }
+
+const WRITE_SQL = {
+  selectTarget: "SELECT id, ocr_text, reviewed FROM source_images WHERE id = ?",
+  selectReviewed: "SELECT reviewed FROM source_images WHERE id = ?",
+  updateText: `UPDATE source_images
+    SET ocr_text = ?
+    WHERE id = ? AND ${reviewedSqlPredicate("reviewed", false)}`,
+  insertHistory: `INSERT INTO mcp_ocr_edit_history
+    (source_image_id, changed_at, old_text, new_text, old_bytes, new_bytes)
+    VALUES (?, ?, ?, ?, ?, ?)`,
+} as const;
 
 const HISTORY_SCHEMA = `
 CREATE TABLE IF NOT EXISTS mcp_ocr_edit_history (
@@ -62,6 +74,7 @@ export class OcrWriteRepository {
     this.log = options.log ?? console.log;
     try {
       validateOcrSchema(db);
+      validateOcrWriteTriggers(db);
       const historyTableExisted = Boolean(db.prepare(
         "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'mcp_ocr_edit_history'"
       ).get());
@@ -166,11 +179,11 @@ export class OcrWriteRepository {
     try {
       this.db.exec("BEGIN IMMEDIATE");
       began = true;
-      const row = this.statement("SELECT id, ocr_text, reviewed FROM source_images WHERE id = ?").get(id) as
-        { id: number; ocr_text: string | null; reviewed: number } | undefined;
+      const row = this.statement(WRITE_SQL.selectTarget).get(id) as
+        { id: number; ocr_text: string | null; reviewed: number | null } | undefined;
       if (!row) throw new OcrWriteError("record_not_found", "No OCR record exists with this id.");
       // Treat every non-zero value as protected; this fails closed even if the DB contains an unexpected flag.
-      if (row.reviewed !== 0) {
+      if (isReviewedFlag(row.reviewed)) {
         throw new OcrWriteError("reviewed_record_protected", "This OCR record is reviewed and cannot be changed by the MCP write tool.");
       }
 
@@ -189,10 +202,10 @@ export class OcrWriteRepository {
 
       // Defense in depth: repeat reviewed=0 in the UPDATE predicate as well as the earlier guard.
       // BEGIN IMMEDIATE serializes SQLite writers while this short transaction is active.
-      const update = this.statement("UPDATE source_images SET ocr_text = ? WHERE id = ? AND reviewed = 0").run(newText, id);
+      const update = this.statement(WRITE_SQL.updateText).run(newText, id);
       const updated = Number(update.changes);
       if (updated !== 1) {
-        const current = this.statement("SELECT reviewed FROM source_images WHERE id = ?").get(id) as { reviewed: number } | undefined;
+        const current = this.statement(WRITE_SQL.selectReviewed).get(id) as { reviewed: number | null } | undefined;
         if (!current) throw new OcrWriteError("record_not_found", "No OCR record exists with this id.");
         throw new OcrWriteError("reviewed_record_protected", "This OCR record is reviewed and cannot be changed by the MCP write tool.");
       }
@@ -200,10 +213,9 @@ export class OcrWriteRepository {
       const changedAt = new Date().toISOString();
       const oldBytes = Buffer.byteLength(oldText, "utf8");
       const newBytes = Buffer.byteLength(newText, "utf8");
-      const history = this.statement(`
-        INSERT INTO mcp_ocr_edit_history (source_image_id, changed_at, old_text, new_text, old_bytes, new_bytes)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(id, changedAt, oldText, newText, oldBytes, newBytes);
+      const history = this.statement(WRITE_SQL.insertHistory).run(
+        id, changedAt, oldText, newText, oldBytes, newBytes,
+      );
       const historyId = Number(history.lastInsertRowid);
       this.db.exec("COMMIT");
       began = false;

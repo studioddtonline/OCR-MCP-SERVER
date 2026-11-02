@@ -8,19 +8,78 @@ import { openReadOnlyDatabase } from "./sqlite.js";
 import { OcrRepository } from "./repository.js";
 import { OcrWriteError, OcrWriteRepository, MAX_OCR_TEXT_CODE_UNITS, OCR_HISTORY_WARNING_BYTES } from "./write-repository.js";
 
+function createFtsMaintenanceTriggers(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TRIGGER source_images_ai AFTER INSERT ON source_images BEGIN
+      INSERT INTO images_fts(rowid, ocr_text) VALUES (new.id, new.ocr_text);
+    END;
+    CREATE TRIGGER source_images_ad AFTER DELETE ON source_images BEGIN
+      INSERT INTO images_fts(images_fts, rowid, ocr_text) VALUES ('delete', old.id, old.ocr_text);
+    END;
+    CREATE TRIGGER source_images_au AFTER UPDATE OF ocr_text ON source_images BEGIN
+      INSERT INTO images_fts(images_fts, rowid, ocr_text) VALUES ('delete', old.id, old.ocr_text);
+      INSERT INTO images_fts(rowid, ocr_text) VALUES (new.id, new.ocr_text);
+    END;
+  `);
+}
+
 function createDb(path: string): void {
   const db = createOcrFixtureDatabase(path, [
     { id: 1, label: "Book A", fileName: "020.webp", text: "Reviewed OCR text", reviewed: 1 },
     { id: 2, label: "Book A", fileName: "021.webp", text: "Original OCR text", reviewed: 0 },
   ]);
+  createFtsMaintenanceTriggers(db);
+  db.close();
+}
+
+test("write repository refuses to start when book-ocr FTS maintenance triggers are missing", () => {
+  const dir = createTempDir("ocr-write-missing-fts-trigger-");
+  const path = join(dir, "ocr.sqlite");
+  const db = createOcrFixtureDatabase(path, [
+    { id: 1, label: "Book A", fileName: "020.webp", text: "Original OCR text", reviewed: 0 },
+  ]);
+  db.close();
+  try {
+    assert.throws(() => OcrWriteRepository.open(path, { log: () => undefined }), /source_images_ai FTS maintenance trigger/);
+    const check = new DatabaseSync(path, { readOnly: true });
+    try {
+      assert.equal(check.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mcp_ocr_edit_history'").get(), undefined,
+        "startup validation must fail before creating the MCP history table");
+    } finally { check.close(); }
+  } finally {
+    removeTempDir(dir);
+  }
+});
+
+test("write repository rejects a named trigger that does not maintain images_fts", () => {
+  const dir = createTempDir("ocr-write-invalid-fts-trigger-");
+  const path = join(dir, "ocr.sqlite");
+  const db = createOcrFixtureDatabase(path, [
+    { id: 1, label: "Book A", fileName: "020.webp", text: "Original OCR text", reviewed: 0 },
+  ]);
   db.exec(`
+    CREATE TRIGGER source_images_ai AFTER INSERT ON source_images BEGIN
+      SELECT 1;
+    END;
+    CREATE TRIGGER source_images_ad AFTER DELETE ON source_images BEGIN
+      INSERT INTO images_fts(images_fts, rowid, ocr_text) VALUES ('delete', old.id, old.ocr_text);
+    END;
     CREATE TRIGGER source_images_au AFTER UPDATE OF ocr_text ON source_images BEGIN
       INSERT INTO images_fts(images_fts, rowid, ocr_text) VALUES ('delete', old.id, old.ocr_text);
       INSERT INTO images_fts(rowid, ocr_text) VALUES (new.id, new.ocr_text);
     END;
   `);
   db.close();
-}
+  try {
+    assert.throws(() => OcrWriteRepository.open(path, { log: () => undefined }), /valid source_images_ai FTS maintenance trigger/);
+    const check = new DatabaseSync(path, { readOnly: true });
+    try {
+      assert.equal(check.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mcp_ocr_edit_history'").get(), undefined);
+    } finally { check.close(); }
+  } finally {
+    removeTempDir(dir);
+  }
+});
 
 test("writes unreviewed OCR, records complete history, and leaves FTS maintenance to the existing trigger", () => {
   const dir = createTempDir("ocr-write-repository-");
@@ -94,6 +153,40 @@ test("reviewed records are rejected even when the submitted body is identical", 
   }
 });
 
+test("NULL and unexpected non-zero reviewed flags are protected from OCR writes", () => {
+  const dir = createTempDir("ocr-write-invalid-reviewed-");
+  const path = join(dir, "ocr.sqlite");
+  const db = new DatabaseSync(path);
+  db.exec(`
+    CREATE TABLE source_images (id INTEGER PRIMARY KEY, file_path TEXT, file_name TEXT, ocr_text TEXT, reviewed INTEGER);
+    CREATE VIRTUAL TABLE images_fts USING fts5(ocr_text, content='source_images', content_rowid='id', tokenize='trigram');
+    INSERT INTO source_images VALUES (1, 'Book A', '001.webp', 'Alpha reviewed', 2);
+    INSERT INTO source_images VALUES (2, 'Book A', '002.webp', 'Alpha null flag', NULL);
+    INSERT INTO images_fts(images_fts) VALUES ('rebuild');
+    CREATE TRIGGER source_images_ai AFTER INSERT ON source_images BEGIN
+      INSERT INTO images_fts(rowid, ocr_text) VALUES (new.id, new.ocr_text);
+    END;
+    CREATE TRIGGER source_images_ad AFTER DELETE ON source_images BEGIN
+      INSERT INTO images_fts(images_fts, rowid, ocr_text) VALUES ('delete', old.id, old.ocr_text);
+    END;
+    CREATE TRIGGER source_images_au AFTER UPDATE OF ocr_text ON source_images BEGIN
+      INSERT INTO images_fts(images_fts, rowid, ocr_text) VALUES ('delete', old.id, old.ocr_text);
+      INSERT INTO images_fts(rowid, ocr_text) VALUES (new.id, new.ocr_text);
+    END;
+  `);
+  db.close();
+  const writer = OcrWriteRepository.open(path, { log: () => undefined });
+  try {
+    for (const id of [1, 2]) {
+      assert.throws(() => writer.writeText(id, "Should remain protected"), (error: unknown) =>
+        error instanceof OcrWriteError && error.code === "reviewed_record_protected");
+    }
+  } finally {
+    writer.close();
+    removeTempDir(dir);
+  }
+});
+
 test("history insertion failure rolls back the OCR body update", () => {
   const dir = createTempDir("ocr-write-rollback-");
   const path = join(dir, "ocr.sqlite");
@@ -132,6 +225,7 @@ test("history warning is emitted at startup when old_text + new_text reaches 10 
   const dir = createTempDir("ocr-write-history-warning-");
   const path = join(dir, "ocr.sqlite");
   const db = createOcrFixtureDatabase(path, []);
+  createFtsMaintenanceTriggers(db);
   db.exec(`CREATE TABLE mcp_ocr_edit_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_image_id INTEGER NOT NULL,

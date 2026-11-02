@@ -12,6 +12,7 @@ import { createOcrFixtureDatabase } from "../../test/support/ocr-fixture.js";
 import { closeTestServer, waitForTestServer } from "../../test/support/http-server.js";
 import { startHttpServer } from "./server.js";
 import { createMcpHttpHandler } from "../mcp/http-handler.js";
+import { createTestMcpRuntime } from "../../test/support/mcp-runtime.js";
 
 // 多層防御: 認証なしで MCP を公開してよいのは auth.mode が明示的に "none" のときだけ。
 // loadConfig の検証をすり抜けた設定や想定外の値が来ても、無認証公開 (200) にならないことを確認する。
@@ -27,7 +28,7 @@ async function serve(config: AppConfig, withStores: boolean, run: (ctx: { url: s
   const store = new OAuthStore(join(dir, "oauth.sqlite"));
   const tokens = new TokenStore(join(dir, "tokens.sqlite"));
   const apiToken = tokens.create({ name: "t", purpose: "api" }).token;
-  const server: Server = startHttpServer(config, createMcpHttpHandler(new OcrRepository(db), config), withStores ? { status: "ready", store, tokens } : undefined);
+  const server: Server = startHttpServer(config, createMcpHttpHandler(createTestMcpRuntime(new OcrRepository(db)), config), withStores ? { status: "ready", store, tokens } : undefined);
   const { base } = await waitForTestServer(server);
   try {
     await run({ url: `${base}/mcp`, apiToken });

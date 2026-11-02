@@ -24,7 +24,7 @@ const forbidden = files.filter((file) =>
   /\.test\.(?:js|mjs|cjs)$/.test(file) ||
   forbiddenBasenames.has(file.slice(file.lastIndexOf("/") + 1))
 );
-const required = ["index.js", "cli/tokens.js"];
+const required = ["index.js", "cli/tokens.js", "features/japanese-search/worker.mjs", "features/ocr/reviewed.mjs", "features/original-images/image-worker.mjs"];
 const missing = required.filter((file) => !files.includes(file));
 if (forbidden.length || missing.length) {
   if (forbidden.length) console.error("Forbidden test/support files in dist:", forbidden.join(", "));

@@ -8,12 +8,15 @@
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "npm run typecheck && node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && node scripts/check-dist.mjs",
+    "build": "npm run typecheck && node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && node scripts/copy-runtime-assets.mjs && node scripts/check-dist.mjs",
     "start": "node dist/index.js",
     "test": "tsx --test \"src/**/*.test.ts\"",
     "token": "node --disable-warning=ExperimentalWarning dist/cli/tokens.js",
     "token:dev": "tsx --disable-warning=ExperimentalWarning src/cli/tokens.ts",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "japanese-search:install": "bash scripts/install-sqlite-vaporetto.sh",
+    "japanese-search:check": "node scripts/check-sqlite-vaporetto.mjs",
+    "japanese-search:index": "node scripts/build-japanese-search-index.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/node": "^2.1.1",

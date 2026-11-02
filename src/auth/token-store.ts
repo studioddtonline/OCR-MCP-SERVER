@@ -45,6 +45,16 @@ const SQLITE_BUSY_TIMEOUT_MS = 500;
 const now = () => Math.floor(Date.now() / 1000);
 const digest = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
 
+const TOKEN_SQL = {
+  verify: `SELECT id, name, purpose, scope, expires_at, last_used_at
+    FROM static_tokens
+    WHERE token_hash = ? AND purpose = ? AND revoked_at IS NULL
+      AND (expires_at IS NULL OR expires_at > ?)`,
+  updateLastUsed: `UPDATE static_tokens
+    SET last_used_at = ?
+    WHERE id = ? AND (last_used_at IS NULL OR last_used_at <= ?)`,
+} as const;
+
 export interface StaticTokenRecord {
   name: string;
   purpose: TokenPurpose;
@@ -83,17 +93,9 @@ function toRecord(row: Row, t: number): StaticTokenRecord {
 
 export class TokenStore {
   readonly db: DatabaseSync;
-  private readonly preparedStatements = new Map<string, ReturnType<DatabaseSync["prepare"]>>();
+  private readonly verifyStatement!: ReturnType<DatabaseSync["prepare"]>;
+  private readonly updateLastUsedStatement!: ReturnType<DatabaseSync["prepare"]>;
   private nextLastUsedAttemptAt = 0;
-
-  private statement(sql: string): ReturnType<DatabaseSync["prepare"]> {
-    let statement = this.preparedStatements.get(sql);
-    if (!statement) {
-      statement = this.db.prepare(sql);
-      this.preparedStatements.set(sql, statement);
-    }
-    return statement;
-  }
 
   constructor(databasePath: string) {
     const absolutePath = resolve(databasePath);
@@ -101,6 +103,10 @@ export class TokenStore {
     this.db = new DatabaseSync(absolutePath, { timeout: SQLITE_BUSY_TIMEOUT_MS });
     try {
       this.db.exec(SCHEMA);
+      // 頻繁に使う 2 本の SQL は、固定の名前付きステートメントとして一度だけ prepare する。
+      // SQL 文字列をキーにした汎用 Map は、対象が固定なので必要ない。
+      this.verifyStatement = this.db.prepare(TOKEN_SQL.verify);
+      this.updateLastUsedStatement = this.db.prepare(TOKEN_SQL.updateLastUsed);
       chmodSync(absolutePath, 0o600);
     } catch (error) {
       try { this.db.close(); } catch { /* Preserve the initialization error. */ }
@@ -150,12 +156,10 @@ export class TokenStore {
   verify(candidate: string, purpose: TokenPurpose): VerifiedToken | undefined {
     if (!candidate.startsWith(TOKEN_PREFIX[purpose]) || candidate.length > 256) return undefined;
     const t = now();
-    const row = this.statement(`SELECT id, name, purpose, scope, expires_at, last_used_at FROM static_tokens
-      WHERE token_hash = ? AND purpose = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`)
-      .get(digest(candidate), purpose, t) as {
-        id: number; name: string; purpose: TokenPurpose; scope: string;
-        expires_at: number | null; last_used_at: number | null;
-      } | undefined;
+    const row = this.verifyStatement.get(digest(candidate), purpose, t) as {
+      id: number; name: string; purpose: TokenPurpose; scope: string;
+      expires_at: number | null; last_used_at: number | null;
+    } | undefined;
     if (!row) return undefined;
 
     // last_used_at is telemetry, not part of token validity. Avoid a write in the throttle window;
@@ -164,8 +168,7 @@ export class TokenStore {
     const lastUsedIsStale = row.last_used_at === null || row.last_used_at <= t - LAST_USED_THROTTLE_SECONDS;
     if (lastUsedIsStale && t >= this.nextLastUsedAttemptAt) {
       try {
-        this.statement(`UPDATE static_tokens SET last_used_at = ? WHERE id = ? AND (last_used_at IS NULL OR last_used_at <= ?)`)
-          .run(t, row.id, t - LAST_USED_THROTTLE_SECONDS);
+        this.updateLastUsedStatement.run(t, row.id, t - LAST_USED_THROTTLE_SECONDS);
       } catch (error) {
         // A failed telemetry write can wait for SQLite's busy_timeout and block this synchronous
         // server. Back off globally for this connection so every subsequent request does not repeat

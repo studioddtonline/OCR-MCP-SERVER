@@ -22,5 +22,8 @@
     "defaultLimit": 20,
     "maxLimit": 50,
     "snippetLength": 160
+  },
+  "japaneseSearch": {
+    "enabled": false
   }
 }

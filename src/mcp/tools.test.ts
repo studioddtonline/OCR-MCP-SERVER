@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { MAX_QUERY_CHILDREN, MAX_QUERY_TERM_CODE_POINTS } from "../features/ocr/query.js";
 import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
@@ -8,6 +9,7 @@ import { ClientSafeError } from "../shared/errors.js";
 import { testConfig } from "../../test/support/oauth-kit.js";
 import { startHttpServer } from "../http/server.js";
 import { createMcpHttpHandler } from "./http-handler.js";
+import { createTestMcpRuntime } from "../../test/support/mcp-runtime.js";
 import { createMcpToolSchemas } from "./tools.js";
 
 // ツール層の最後の砦: リポジトリが想定外の例外 (SQLite / fs のエラーなど、ローカルパスを含みうる) を投げても、
@@ -18,7 +20,7 @@ const raw = () => { throw new Error(`SQLITE_IOERR: disk I/O error while reading 
 
 async function withRepo(repo: Partial<Record<keyof OcrRepository, unknown>>, run: (call: (name: string, args?: unknown) => Promise<{ isError?: boolean; text: string }>) => Promise<void>) {
   const config: AppConfig = { ...testConfig, auth: { mode: "none" } };
-  const server = startHttpServer(config, createMcpHttpHandler(repo as unknown as OcrRepository, config));
+  const server = startHttpServer(config, createMcpHttpHandler(createTestMcpRuntime(repo as unknown as OcrRepository), config));
   await once(server, "listening");
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
   try {
@@ -65,6 +67,21 @@ test("a missing record is an ordinary tool error, not an exception", async () =>
   });
 });
 
+test("search_ocr schema accepts plain short strings and nested boolean query objects", () => {
+  const schema = createMcpToolSchemas(testConfig).searchOcr;
+  assert.equal(schema.safeParse({ query: "本" }).success, true);
+  assert.equal(schema.safeParse({ query: "😀😀" }).success, true);
+  assert.equal(schema.safeParse({ query: "😀😀😀" }).success, true);
+  assert.equal(schema.safeParse({ query: "   " }).success, false);
+  assert.equal(schema.safeParse({ query: { type: "and", nodes: [
+    { type: "term", value: "宮崎" },
+    { type: "not", node: { type: "term", value: "字幕" } },
+  ] } }).success, true);
+  assert.equal(schema.safeParse({ query: { type: "not", node: { type: "term", value: "字幕" } } }).success, true);
+  assert.equal(schema.safeParse({ query: { type: "xor", nodes: [] } }).success, false);
+});
+
+
 test("search_ocr maxLimit is enforced independently for each configuration", () => {
   const configLow: AppConfig = { ...testConfig, search: { ...testConfig.search, maxLimit: 7 } };
   const configHigh: AppConfig = { ...testConfig, search: { ...testConfig.search, maxLimit: 37 } };
@@ -77,6 +94,105 @@ test("search_ocr maxLimit is enforced independently for each configuration", () 
   assert.equal(highSchema.safeParse({ query: "sample", limit: 38 }).success, false);
 });
 
+test("search_ocr passes a nested boolean query to the repository", async () => {
+  let receivedQuery: unknown;
+  await withRepo({
+    search: (options: { query: unknown }) => {
+      receivedQuery = options.query;
+      return { results: [{ id: 4, file_path: "Book A", file_name: "004.webp", reviewed: 0, snippet: "…宮崎監督…" }], returned: 1, offset: 0, limit: 20, nextAfterId: null };
+    }
+  }, async (call) => {
+    const query = { type: "and", nodes: [
+      { type: "term", value: "宮崎" },
+      { type: "not", node: { type: "term", value: "字幕" } },
+    ] };
+    const out = await call("search_ocr", { query });
+    assert.equal(out.isError, undefined);
+    assert.deepEqual(JSON.parse(out.text), { results: [{ id: 4, file_path: "Book A", file_name: "004.webp", reviewed: 0, snippet: "…宮崎監督…" }], returned: 1, offset: 0, limit: 20, nextAfterId: null });
+    assert.deepEqual(receivedQuery, query);
+  });
+});
+
+test("search_ocr_literal is no longer advertised as a separate MCP tool", async () => {
+  const config: AppConfig = { ...testConfig, auth: { mode: "none" } };
+  const server = startHttpServer(config, createMcpHttpHandler(createTestMcpRuntime({
+    search: () => ({ results: [], returned: 0, offset: 0, limit: 20, nextAfterId: null }),
+    getById: () => null,
+    listLabels: () => [],
+    getStats: () => ({ total: 0, reviewed: 0, unreviewed: 0, labels: 0 }),
+  } as unknown as OcrRepository), config));
+  await once(server, "listening");
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    const data = (await response.text()).split("\n").find((line) => line.startsWith("data: "))!;
+    const tools = (JSON.parse(data.slice(6)) as {
+      result: { tools: Array<{ name: string; inputSchema?: Record<string, unknown> }> };
+    }).result.tools;
+    assert.ok(tools.some((tool) => tool.name === "search_ocr"));
+    assert.ok(!tools.some((tool) => tool.name === "search_ocr_literal"));
+
+    const searchSchema = tools.find((tool) => tool.name === "search_ocr")?.inputSchema;
+    assert.ok(searchSchema, "search_ocr must advertise its input schema");
+    const properties = searchSchema.properties as Record<string, Record<string, unknown>>;
+    const querySchema = properties.query;
+    assert.ok(Array.isArray(querySchema?.oneOf), "query must advertise both literal and AST forms");
+    assert.deepEqual((querySchema.oneOf as Array<Record<string, unknown>>)[1], { $ref: "#/$defs/QueryNode" });
+
+    const definitions = searchSchema.$defs as Record<string, unknown>;
+    const queryNode = definitions.QueryNode;
+    assert.ok(queryNode && typeof queryNode === "object", "QueryNode definition must exist");
+    assert.deepEqual((queryNode as Record<string, unknown>).oneOf, [
+      { $ref: "#/$defs/QueryTerm" },
+      { $ref: "#/$defs/QueryAnd" },
+      { $ref: "#/$defs/QueryOr" },
+      { $ref: "#/$defs/QueryNot" },
+    ], "the recursive AST must expose all four node variants");
+
+    const queryTermDefinition = definitions.QueryTerm;
+    assert.ok(queryTermDefinition && typeof queryTermDefinition === "object", "QueryTerm definition must exist");
+    const queryTermProperties = (queryTermDefinition as Record<string, unknown>).properties;
+    assert.ok(queryTermProperties && typeof queryTermProperties === "object", "QueryTerm properties must exist");
+    const queryTermValue = (queryTermProperties as Record<string, unknown>).value;
+    assert.ok(queryTermValue && typeof queryTermValue === "object", "QueryTerm.value schema must exist");
+    assert.equal((queryTermValue as Record<string, unknown>).maxLength, MAX_QUERY_TERM_CODE_POINTS);
+
+    const queryAndDefinition = definitions.QueryAnd;
+    assert.ok(queryAndDefinition && typeof queryAndDefinition === "object", "QueryAnd definition must exist");
+    const queryAndProperties = (queryAndDefinition as Record<string, unknown>).properties;
+    assert.ok(queryAndProperties && typeof queryAndProperties === "object", "QueryAnd properties must exist");
+    const andNodes = (queryAndProperties as Record<string, unknown>).nodes;
+    assert.ok(andNodes && typeof andNodes === "object", "QueryAnd.nodes schema must exist");
+    assert.equal((andNodes as Record<string, unknown>).minItems, 2);
+    assert.equal((andNodes as Record<string, unknown>).maxItems, MAX_QUERY_CHILDREN);
+    assert.deepEqual((andNodes as Record<string, unknown>).items, { $ref: "#/$defs/QueryNode" });
+
+    const queryOrDefinition = definitions.QueryOr;
+    assert.ok(queryOrDefinition && typeof queryOrDefinition === "object", "QueryOr definition must exist");
+    const queryOrProperties = (queryOrDefinition as Record<string, unknown>).properties;
+    assert.ok(queryOrProperties && typeof queryOrProperties === "object", "QueryOr properties must exist");
+    const queryOrNodes = (queryOrProperties as Record<string, unknown>).nodes;
+    assert.ok(queryOrNodes && typeof queryOrNodes === "object", "QueryOr.nodes schema must exist");
+    assert.equal((queryOrNodes as Record<string, unknown>).minItems, 2);
+    assert.equal((queryOrNodes as Record<string, unknown>).maxItems, MAX_QUERY_CHILDREN);
+    assert.deepEqual((queryOrNodes as Record<string, unknown>).items, { $ref: "#/$defs/QueryNode" });
+
+    const queryNotDefinition = definitions.QueryNot;
+    assert.ok(queryNotDefinition && typeof queryNotDefinition === "object", "QueryNot definition must exist");
+    const queryNotProperties = (queryNotDefinition as Record<string, unknown>).properties;
+    assert.ok(queryNotProperties && typeof queryNotProperties === "object", "QueryNot properties must exist");
+    assert.deepEqual((queryNotProperties as Record<string, unknown>).node, { $ref: "#/$defs/QueryNode" });
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+
 test("search_ocr rejects a limit above configured maxLimit through the registered MCP tool", async () => {
   const config: AppConfig = {
     ...testConfig,
@@ -84,9 +200,9 @@ test("search_ocr rejects a limit above configured maxLimit through the registere
     search: { ...testConfig.search, maxLimit: 7 },
   };
   let searchCalls = 0;
-  const server = startHttpServer(config, createMcpHttpHandler({
+  const server = startHttpServer(config, createMcpHttpHandler(createTestMcpRuntime({
     search: () => { searchCalls++; return []; },
-  } as unknown as OcrRepository, config));
+  } as unknown as OcrRepository), config));
   await once(server, "listening");
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
   try {
@@ -101,6 +217,46 @@ test("search_ocr rejects a limit above configured maxLimit through the registere
     const body = await res.text();
     assert.ok(!res.ok || /error|invalid|limit/i.test(body), "the MCP request should report input validation failure");
     assert.equal(searchCalls, 0, "the repository must not be called for an over-limit request");
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+
+test("search_ocr_japanese is registered only when enabled and fails safely if its index is unavailable", async () => {
+  const config: AppConfig = {
+    ...testConfig,
+    auth: { mode: "none" },
+    japaneseSearch: {
+      enabled: true,
+      indexPath: "/tmp/missing-japanese-index.sqlite",
+      extensionPath: "/tmp/libsqlite_vaporetto.so",
+      busyTimeoutMs: 500,
+      maxLimit: 20,
+    },
+  };
+  const server = startHttpServer(config, createMcpHttpHandler(createTestMcpRuntime({
+    search: () => [], getById: () => null, listLabels: () => [], getStats: () => ({ total: 0, reviewed: 0, unreviewed: 0, labels: 0 }),
+  } as unknown as OcrRepository, {
+    japaneseSearch: { unavailableReason: "extension and index were not installed" },
+  }), config));
+  await once(server, "listening");
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+  try {
+    const listRes = await fetch(url, {
+      method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    assert.match(await listRes.text(), /search_ocr_japanese/);
+    const callRes = await fetch(url, {
+      method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "search_ocr_japanese", arguments: { query: "東京" } } }),
+    });
+    const data = (await callRes.text()).split("\n").find((line) => line.startsWith("data: "))!;
+    const result = (JSON.parse(data.slice(6)) as { result: { isError?: boolean; content: Array<{ text?: string }> } }).result;
+    assert.equal(result.isError, true);
+    assert.deepEqual(JSON.parse(result.content.map((part) => part.text ?? "").join("\n")), { error: "Japanese search is unavailable." });
   } finally {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));

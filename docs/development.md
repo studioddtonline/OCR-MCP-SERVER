@@ -23,7 +23,7 @@ npm run dev
 - `src/index.ts`: サーバーの既存エントリーポイント。
 - `src/app/`: 起動時の組み立て、リソースの寿命、終了処理。
 - `src/features/ocr/`: OCR DB の読み取り専用接続、書き込み用の別接続、スキーマ検証、Repository と OCR ツール。
-- `src/features/original-images/`: 元画像ストレージの検証、画像 Repository と画像ツール。
+- `src/features/original-images/`: 元画像ストレージの検証、画像 Repository と画像ツール。画像ファイルの読み込み・Base64 化は専用 Worker に分離します。FIFO キューは Runtime が所有する `OriginalImageRepository` のインスタンスに属し、リクエストごとに作られる MCP サーバーへ同じ Repository を注入して共有します。
 - `src/mcp/`: MCP サーバーと機能ツールの登録を組み立てる層。
 - `src/http/`: HTTP ルーティング、認証ゲート、OAuth ハンドラー。
 - `src/auth/`: Bearer トークン、OAuth ストア、スコープ、OAuth ルート。
@@ -31,6 +31,12 @@ npm run dev
 - `src/shared/`: 共通エラー処理と MCP ツール結果の生成。
 - `test/support/`: テスト用フィクスチャ、サーバーヘルパー、一時ディレクトリ、OAuth テスト補助。
 - `scripts/`: ビルド成果物のクリーンアップ・検査。
+
+## SQL と Prepared Statement の扱い
+
+SQL は、それを実行する Repository / Store の近くに名前付き定数として置きます。検索 AST から生成する SQL は形が複数になるため、OCR 検索 Repository では最大 64 件の LRU キャッシュを使います。OAuth のアクセストークン検証と静的トークン検証のように SQL の形が固定されたホットパスでは、汎用 Map ではなく名前付き Prepared Statement を接続ごとに一度だけ prepare して再利用します。
+
+テストのためだけに必要な SQLite 拡張ロードなどの補助コードは `test/support/` に置き、本番ビルド対象の `src/features/` には置きません。
 
 ## コメントの言語方針
 
@@ -61,6 +67,14 @@ npm run dev
 - MCP ツール名、説明、入力スキーマ、`isError` と HTTP 503 の使い分け。
 - OAuth・静的トークン DB のテーブル、トークン接頭辞。
 
+`search_ocr.query` の公開 JSON Schema は `$defs` / `$ref` で再帰 AST（term / and / or / not）を表します。一方、実行時の Zod スキーマは深い入力を再帰パースしない浅い envelope 検証を行い、ノード数・階層数・子数・term 長は `parseSearchQuery()` が反復処理で検査します。この二層構造は意図した設計です。AST の公開形を変更する場合は、`tools/list` の JSON Schema 検査と実行時検証をセットで更新してください。
+
 ## 現在の機能制約
 
+日本語検索 Worker は、待機中の検索要求がある場合だけ自動再起動します。起動前の連続失敗に対する再起動は指数バックオフ（既定 250 ms から最大 8 秒）で最大 5 回までです。`ready` 到達で起動失敗カウンターをリセットします。実行タイムアウトや `ready` 後の異常終了はこの上限を消費せず、次の要求がある場合に限って Worker を再生成します。上限到達後は待機中の要求をエラーにし、サーバー再起動が必要です。Worker 起動時の `startup-error` と起動タイムアウトは自動再起動せず、検索不可として扱います。検索要求のキュー待機期限は投入時から最大 180 秒です。実行時間のタイムアウトは従来どおり Worker の `started` 通知後に計測します。
+
+日本語検索 Worker と画像 Worker は、`src/shared/worker-host.ts` の共通ホストで生成・世代識別・ready Promise・`message` / `error` / `exit` の監視・起動タイムアウト・冪等な終了・`ref()` / `unref()` を共有します。共通ホストは障害を世代ごとに一度だけ通知し、切り離された古い世代からのイベントを配送しません。キュー、キャンセル、実行タイムアウト、再起動とバックオフ、Worker メッセージの意味付けは各機能に残します。
+
 OCR 書き込みは `ocrWrite.enabled` が `true` の場合だけ登録します。`auth.mode: "oauth"` が必要で、ツール内でも `authInfo.scopes` の `ocr:write` を検査します。書き込み Repository は読み取り Repository と別接続を使います。
+
+`reviewed` は `0` だけを未レビュー・書き込み可能と扱います。`1`、その他の非ゼロ値、NULL はレビュー済み／保護対象です。検索・統計・書き込み・日本語検索で同じ意味を使います。OCR 書き込みを有効にする場合、book-ocr が管理する `source_images_ai` / `source_images_ad` / `source_images_au` の FTS 同期トリガーを起動時に検証します。MCP サーバーは book-ocr 管理の `source_images` / `images_fts` とその FTS トリガーを変更しません。MCP 専用の `mcp_ocr_edit_history` は引き続き MCP 側で作成・管理します。

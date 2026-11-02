@@ -4,6 +4,7 @@ import { DatabaseConfigSchema } from "./sections/database.js";
 import { OAuthConfigSchema } from "./sections/oauth.js";
 import { OriginalImagesConfigSchema } from "./sections/original-images.js";
 import { OcrWriteConfigSchema } from "./sections/ocr-write.js";
+import { JapaneseSearchConfigSchema } from "./sections/japanese-search.js";
 import { SearchConfigSchema } from "./sections/search.js";
 import { ServerConfigSchema } from "./sections/server.js";
 import { StaticTokensConfigSchema } from "./sections/static-tokens.js";
@@ -18,6 +19,7 @@ export const ConfigSchema = z.object({
   staticTokens: StaticTokensConfigSchema,
   originalImages: OriginalImagesConfigSchema,
   ocrWrite: OcrWriteConfigSchema,
+  japaneseSearch: JapaneseSearchConfigSchema,
   search: SearchConfigSchema
 });
 

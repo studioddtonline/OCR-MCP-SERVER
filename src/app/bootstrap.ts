@@ -2,6 +2,7 @@ import type { AppConfig } from "../config/types.js";
 import { openReadOnlyDatabase } from "../features/ocr/sqlite.js";
 import { OcrRepository } from "../features/ocr/repository.js";
 import { OcrWriteRepository, OCR_WRITE_BUSY_TIMEOUT_MS } from "../features/ocr/write-repository.js";
+import { JapaneseSearchRepository } from "../features/japanese-search/repository.js";
 import { OriginalImageRepository } from "../features/original-images/repository.js";
 import { OAuthStore } from "../auth/oauth-store.js";
 import { TokenStore } from "../auth/token-store.js";
@@ -27,6 +28,8 @@ export interface BootstrapOptions {
   openDatabase?: typeof openReadOnlyDatabase;
   /** Override the writable OCR repository opener for degraded-start tests. */
   openWriteRepository?: typeof OcrWriteRepository.open;
+  /** Override the Japanese index opener for startup-path tests. */
+  openJapaneseSearchRepository?: typeof JapaneseSearchRepository.open;
 }
 
 /** Make the common missing-FTS5 failure actionable without changing degraded-start behavior. */
@@ -77,6 +80,25 @@ export function bootstrap(config: AppConfig, options: BootstrapOptions = {}): Ru
     } catch (error) {
       ocrWrite.unavailableReason = describeForLog(error);
       log(`[startup] OCR write repository unavailable (database.path=${config.database.path}); read-only tools will remain available and update_ocr_text will return write_unavailable:`, ocrWrite.unavailableReason);
+    }
+  }
+
+  const japaneseSearch: Runtime["japaneseSearch"] = { enabled: config.japaneseSearch?.enabled ?? false };
+  if (japaneseSearch.enabled) {
+    const openJapaneseSearchRepository = options.openJapaneseSearchRepository ?? JapaneseSearchRepository.open;
+    try {
+      const settings = config.japaneseSearch;
+      japaneseSearch.repository = openJapaneseSearchRepository({
+        indexPath: requiredPath(settings?.indexPath, "japaneseSearch.indexPath"),
+        extensionPath: requiredPath(settings?.extensionPath, "japaneseSearch.extensionPath"),
+        busyTimeoutMs: settings?.busyTimeoutMs ?? 500,
+        maxLimit: settings?.maxLimit ?? 20,
+        log,
+      });
+      log("[startup] Japanese sqlite-vaporetto worker launched; index validation is running asynchronously");
+    } catch (error) {
+      japaneseSearch.unavailableReason = describeForLog(error);
+      log(`[startup] Japanese search unavailable (japaneseSearch.indexPath=${config.japaneseSearch?.indexPath ?? "not configured"}); the Japanese search tool will return a fixed error:`, japaneseSearch.unavailableReason);
     }
   }
 
@@ -135,10 +157,12 @@ export function bootstrap(config: AppConfig, options: BootstrapOptions = {}): Ru
     repo,
     oauth,
     ocrWrite,
+    japaneseSearch,
+    originalImages,
     originalImagesChecked,
     close() {
       if (cleanupTimer) clearInterval(cleanupTimer);
-      for (const closeStore of [() => db?.close(), () => ocrWrite.repository?.close(), () => oauthStore?.close(), () => tokenStore?.close()]) {
+      for (const closeStore of [() => originalImages.close(), () => db?.close(), () => ocrWrite.repository?.close(), () => japaneseSearch.repository?.close(), () => oauthStore?.close(), () => tokenStore?.close()]) {
         try { closeStore(); } catch (error) { logError("[shutdown] failed to close a database:", describeForLog(error)); }
       }
     },

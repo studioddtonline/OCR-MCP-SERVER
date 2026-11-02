@@ -7,10 +7,7 @@ import { createMcpHttpHandler } from "./mcp/http-handler.js";
 function main() {
   const config = loadConfig();
   const runtime = bootstrap(config);
-  const mcpHandler = createMcpHttpHandler(runtime.repo, config, {
-    repository: runtime.ocrWrite.repository,
-    unavailableReason: runtime.ocrWrite.unavailableReason,
-  });
+  const mcpHandler = createMcpHttpHandler(runtime, config);
   const server = startHttpServer(config, mcpHandler, runtime.oauth);
 
   const shutdown = () => {

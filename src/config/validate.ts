@@ -28,6 +28,34 @@ export function validateConfig(input: unknown): AppConfig {
   if (config.originalImages && !config.originalImages.rootPath.startsWith("/")) {
     throw new Error("originalImages.rootPath must be an absolute path");
   }
+  if (config.japaneseSearch?.enabled) {
+    if (!config.japaneseSearch.indexPath) {
+      throw new Error("japaneseSearch.indexPath is required when japaneseSearch.enabled is true");
+    }
+    if (!config.japaneseSearch.extensionPath) {
+      throw new Error("japaneseSearch.extensionPath is required when japaneseSearch.enabled is true");
+    }
+    if (!config.japaneseSearch.indexPath.startsWith("/")) {
+      throw new Error("japaneseSearch.indexPath must be an absolute path");
+    }
+    if (!config.japaneseSearch.extensionPath.startsWith("/")) {
+      throw new Error("japaneseSearch.extensionPath must be an absolute path");
+    }
+    const databasePaths = [
+      config.database.path,
+      config.japaneseSearch.indexPath,
+      ...(config.oauth?.databasePath ? [config.oauth.databasePath] : []),
+      ...(config.staticTokens?.databasePath ? [config.staticTokens.databasePath] : []),
+    ].map((path) => resolve(path));
+    const distinctFiles = new Set(databasePaths);
+    const expectedDistinct = 2 + Number(Boolean(config.oauth?.databasePath)) + Number(Boolean(config.staticTokens?.databasePath));
+    if (distinctFiles.size !== expectedDistinct) {
+      throw new Error("japaneseSearch.indexPath must be different from the OCR, OAuth and static-token database paths");
+    }
+    if (databasePaths.includes(resolve(config.japaneseSearch.extensionPath))) {
+      throw new Error("japaneseSearch.extensionPath must be different from all database paths");
+    }
+  }
   if (config.ocrWrite?.enabled && config.auth.mode !== "oauth") {
     throw new Error("ocrWrite.enabled requires auth.mode to be \"oauth\"");
   }

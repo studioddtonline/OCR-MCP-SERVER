@@ -11,6 +11,7 @@ import { createOcrFixtureDatabase } from "../../test/support/ocr-fixture.js";
 import { closeTestServer, waitForTestServer } from "../../test/support/http-server.js";
 import { startHttpServer, MAX_HTTP_REQUEST_BODY_BYTES } from "./server.js";
 import { createMcpHttpHandler } from "../mcp/http-handler.js";
+import { createTestMcpRuntime } from "../../test/support/mcp-runtime.js";
 
 const MCP_HEADERS = { "content-type": "application/json", accept: "application/json, text/event-stream" };
 
@@ -22,7 +23,7 @@ async function withServer(run: (ctx: { url: string; port: number; store: OAuthSt
   ]);
   const store = new OAuthStore(join(dir, "oauth.sqlite"));
   const tokens = new TokenStore(join(dir, "tokens.sqlite"));
-  const server: Server = startHttpServer(testConfig, createMcpHttpHandler(new OcrRepository(db), testConfig), { status: "ready", store, tokens });
+  const server: Server = startHttpServer(testConfig, createMcpHttpHandler(createTestMcpRuntime(new OcrRepository(db)), testConfig), { status: "ready", store, tokens });
   const { port, base } = await waitForTestServer(server);
   try {
     await run({ url: `${base}/mcp`, port, store, tokens });
@@ -121,7 +122,7 @@ test("Host header validation and removed routes", async () => {
 test("OAuth database startup failure keeps HTTP service up and returns 503 for stateful requests", async () => {
   const dir = createTempDir("server-unavailable-test-");
   const db = createOcrFixtureDatabase(":memory:", []);
-  const server: Server = startHttpServer(testConfig, createMcpHttpHandler(new OcrRepository(db), testConfig), { status: "unavailable", unavailableReason: "permission denied" });
+  const server: Server = startHttpServer(testConfig, createMcpHttpHandler(createTestMcpRuntime(new OcrRepository(db)), testConfig), { status: "unavailable", unavailableReason: "permission denied" });
   const { port, base } = await waitForTestServer(server);
   try {
     assert.equal((await fetch(`${base}/.well-known/oauth-authorization-server`, { headers: { host: "ddns.s13e.net" } })).status, 200);
@@ -157,7 +158,7 @@ test("MCP token verification runtime errors currently return 500", async () => {
   const store = new OAuthStore(join(dir, "oauth.sqlite"));
   const tokens = new TokenStore(join(dir, "tokens.sqlite"));
   const apiToken = tokens.create({ name: "runtime-error", purpose: "api" }).token;
-  const server: Server = startHttpServer(testConfig, createMcpHttpHandler(new OcrRepository(db), testConfig), { status: "ready", store, tokens });
+  const server: Server = startHttpServer(testConfig, createMcpHttpHandler(createTestMcpRuntime(new OcrRepository(db)), testConfig), { status: "ready", store, tokens });
   const { base } = await waitForTestServer(server);
   let tokensClosed = false;
   try {

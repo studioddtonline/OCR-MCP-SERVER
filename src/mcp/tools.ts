@@ -1,10 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import type { AppConfig } from "../config/types.js";
-import type { OcrRepository } from "../features/ocr/repository.js";
+import type { McpRuntimeDependencies } from "./dependencies.js";
 import { SCOPE_WRITE } from "../auth/scopes.js";
 import { createOcrToolSchemas, registerOcrTools, type OcrToolSchemas } from "../features/ocr/tools.js";
 import { createOriginalImageToolSchemas, registerOriginalImageTools, type OriginalImageToolSchemas } from "../features/original-images/tools.js";
-import { registerOcrWriteTool, type OcrWriteToolsOptions } from "../features/ocr/write-tools.js";
+import { registerOcrWriteTool } from "../features/ocr/write-tools.js";
+import { registerJapaneseSearchTool } from "../features/japanese-search/tools.js";
 
 /** Flat schema shape retained for callers that create configuration-specific schemas at startup. */
 export type McpToolSchemas = OcrToolSchemas & OriginalImageToolSchemas;
@@ -16,16 +17,15 @@ export function createMcpToolSchemas(config: AppConfig): McpToolSchemas {
   };
 }
 
-/** Creates a fresh MCP server and composes feature-owned tools without moving feature logic here. */
+/** Creates a fresh MCP server while reusing Runtime-owned feature repositories. */
 export function createMcpServer(
-  repo: OcrRepository,
+  runtime: McpRuntimeDependencies,
   config: AppConfig,
-  schemas: McpToolSchemas = createMcpToolSchemas(config),
-  ocrWrite?: OcrWriteToolsOptions
+  schemas: McpToolSchemas = createMcpToolSchemas(config)
 ): McpServer {
   const server = new McpServer({ name: "ocr-mcp-server", version: "0.1.0" });
 
-  registerOcrTools(server, repo, {
+  registerOcrTools(server, runtime.repo, {
     defaultLimit: config.search.defaultLimit,
     maxLimit: config.search.maxLimit,
     snippetLength: config.search.snippetLength
@@ -37,10 +37,23 @@ export function createMcpServer(
   });
 
   if (config.ocrWrite?.enabled) {
-    registerOcrWriteTool(server, { ...(ocrWrite ?? { unavailableReason: "OCR write repository was not initialized" }), requiredScope: SCOPE_WRITE });
+    registerOcrWriteTool(server, {
+      repository: runtime.ocrWrite.repository,
+      unavailableReason: runtime.ocrWrite.unavailableReason,
+      log: runtime.ocrWrite.log,
+      requiredScope: SCOPE_WRITE,
+    });
   }
 
-  registerOriginalImageTools(server, { rootPath: config.originalImages?.rootPath }, {
+  if (config.japaneseSearch?.enabled) {
+    registerJapaneseSearchTool(server, {
+      repository: runtime.japaneseSearch.repository,
+      unavailableReason: runtime.japaneseSearch.unavailableReason,
+      maxLimit: config.japaneseSearch.maxLimit ?? 20,
+    });
+  }
+
+  registerOriginalImageTools(server, { repository: runtime.originalImages }, {
     listOriginalBookDirectories: schemas.listOriginalBookDirectories,
     listOriginalImages: schemas.listOriginalImages,
     getOriginalImage: schemas.getOriginalImage

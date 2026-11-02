@@ -54,6 +54,7 @@
 | [セキュリティ](docs/security.md) | トークン管理、認証境界、ログ、ネットワーク上の注意 |
 | [トラブルシューティング](docs/troubleshooting.md) | 401 / 429 / 503、FTS5、DB、Caddy、OAuth の障害対応 |
 | [開発者向け情報](docs/development.md) | ソース構成、アーキテクチャ、型検査・ビルド・テスト |
+| [日本語全文検索](docs/japanese-search.md) | sqlite-vaporetto の導入、専用インデックス構築、`search_ocr_japanese` |
 
 ## 認証について
 
@@ -64,4 +65,4 @@
 
 ## 現在の制約
 
-`ocrWrite.enabled` はデフォルト `false` です。有効化時は `auth.mode: "oauth"` が必須です。`update_ocr_text` は `reviewed != 0` を拒否し、OCR 本文と専用履歴を同じ短いトランザクションで更新します。固定レート制限、リクエスト本文上限、履歴10 MiB警告などは [運用](docs/operations.md) と [セキュリティ](docs/security.md) を参照してください。
+`ocrWrite.enabled` はデフォルト `false` です。有効化時は `auth.mode: "oauth"` が必須です。`update_ocr_text` は `reviewed = 0` の行だけを更新し、NULL とその他の非ゼロ値は保護します。書き込み開始時には book-ocr が管理する `source_images_ai` / `source_images_ad` / `source_images_au` FTS 同期トリガーを検証します。MCP サーバーは book-ocr 管理の `source_images` / `images_fts` とそのトリガーを作成・変更しません（MCP 専用の `mcp_ocr_edit_history` は従来どおり MCP 側で管理します）。OCR 本文と専用履歴は同じ短いトランザクションで更新します。固定レート制限、リクエスト本文上限、履歴10 MiB警告などは [運用](docs/operations.md) と [セキュリティ](docs/security.md) を参照してください。

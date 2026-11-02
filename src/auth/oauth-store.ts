@@ -112,6 +112,13 @@ const now = () => Math.floor(Date.now() / 1000);
 const digest = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
 const opaque = (bytes = 32) => randomBytes(bytes).toString("base64url");
 
+const VERIFY_ACCESS_TOKEN_SQL = `SELECT t.client_id, t.scope, t.resource, t.expires_at
+  FROM oauth_access_tokens t
+  JOIN oauth_grants g
+    ON g.subject = 'owner' AND g.client_id = t.client_id
+    AND g.resource = t.resource AND g.revoked_at IS NULL
+  WHERE t.token_hash = ? AND t.revoked_at IS NULL AND t.expires_at > ?`;
+
 function equalHex(a: string, b: string): boolean {
   const aa = Buffer.from(a, "hex");
   const bb = Buffer.from(b, "hex");
@@ -120,16 +127,8 @@ function equalHex(a: string, b: string): boolean {
 
 export class OAuthStore {
   readonly db: DatabaseSync;
-  private readonly preparedStatements = new Map<string, ReturnType<DatabaseSync["prepare"]>>();
-
-  private statement(sql: string): ReturnType<DatabaseSync["prepare"]> {
-    let statement = this.preparedStatements.get(sql);
-    if (!statement) {
-      statement = this.db.prepare(sql);
-      this.preparedStatements.set(sql, statement);
-    }
-    return statement;
-  }
+  // MCP リクエストごとに呼ばれるアクセストークン検証用 SQL は接続単位で再利用する。
+  private readonly verifyAccessTokenStatement!: ReturnType<DatabaseSync["prepare"]>;
 
   constructor(databasePath: string) {
     const absolutePath = resolve(databasePath);
@@ -137,6 +136,7 @@ export class OAuthStore {
     this.db = new DatabaseSync(absolutePath, { timeout: SQLITE_BUSY_TIMEOUT_MS });
     try {
       this.db.exec(SCHEMA);
+      this.verifyAccessTokenStatement = this.db.prepare(VERIFY_ACCESS_TOKEN_SQL);
       chmodSync(absolutePath, 0o600);
     } catch (error) {
       try { this.db.close(); } catch { /* Preserve the initialization error. */ }
@@ -255,9 +255,7 @@ export class OAuthStore {
   }
 
   verifyAccessToken(token: string, expectedResource: string): StoredAccessToken | undefined {
-    const row = this.statement(`SELECT t.client_id, t.scope, t.resource, t.expires_at FROM oauth_access_tokens t
-      JOIN oauth_grants g ON g.subject = 'owner' AND g.client_id = t.client_id AND g.resource = t.resource AND g.revoked_at IS NULL
-      WHERE t.token_hash = ? AND t.revoked_at IS NULL AND t.expires_at > ?`).get(digest(token), now()) as {
+    const row = this.verifyAccessTokenStatement.get(digest(token), now()) as {
       client_id: string; scope: string; resource: string; expires_at: number;
     } | undefined;
     if (!row || row.resource !== expectedResource) return undefined;

@@ -3,3 +3,10 @@ dist/
 .env
 config/config.json
 *.log
+
+# Native sqlite-vaporetto release assets are installed locally, not committed.
+native/sqlite-vaporetto/*
+!native/sqlite-vaporetto/.gitkeep
+
+# Rebuildable derived Japanese search index (original OCR DB remains separate).
+data/ocr-japanese-search.sqlite*

@@ -84,7 +84,7 @@ async function withEnv(run: (env: Env) => Promise<void>) {
     }),
     async start(config, bootstrapOptions = {}) {
       const runtime = bootstrap(config, { ...bootstrapOptions, log, logError: log });
-      const server = startHttpServer(config, createMcpHttpHandler(runtime.repo, config, { repository: runtime.ocrWrite.repository, unavailableReason: runtime.ocrWrite.unavailableReason, log }), runtime.oauth);
+      const server = startHttpServer(config, createMcpHttpHandler({ ...runtime, ocrWrite: { ...runtime.ocrWrite, log } }, config), runtime.oauth);
       const { base } = await waitForTestServer(server);
       const stop = async () => {
         await closeTestServer(server);

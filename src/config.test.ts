@@ -107,3 +107,37 @@ test("originalImages.rootPath must be an absolute path (a relative path would de
     assert.equal(loadConfig().originalImages, undefined, "originalImages stays optional");
   });
 });
+
+
+test("Japanese search is disabled by default and requires separate absolute paths when enabled", () => {
+  withConfig({ ...base, auth: { mode: "none" } }, () => {
+    const config = loadConfig();
+    assert.equal(config.japaneseSearch?.enabled, false);
+    assert.equal(config.japaneseSearch?.busyTimeoutMs, 500);
+    assert.equal(config.japaneseSearch?.maxLimit, 20);
+  });
+
+  const enabled = {
+    ...base,
+    auth: { mode: "none" },
+    japaneseSearch: {
+      enabled: true,
+      indexPath: "/var/lib/ocr/japanese-search.sqlite",
+      extensionPath: "/opt/ocr-mcp/native/sqlite-vaporetto/libsqlite_vaporetto.so",
+    },
+  };
+  withConfig(enabled, () => {
+    const config = loadConfig();
+    assert.equal(config.japaneseSearch?.enabled, true);
+    assert.equal(config.japaneseSearch?.maxLimit, 20);
+  });
+  withConfig({ ...enabled, japaneseSearch: { ...enabled.japaneseSearch, indexPath: "relative/index.sqlite" } }, () => {
+    assert.throws(() => loadConfig(), /japaneseSearch\.indexPath must be an absolute path/);
+  });
+  withConfig({ ...enabled, japaneseSearch: { ...enabled.japaneseSearch, indexPath: base.database.path } }, () => {
+    assert.throws(() => loadConfig(), /must be different from the OCR, OAuth and static-token database paths/);
+  });
+  withConfig({ ...enabled, japaneseSearch: { ...enabled.japaneseSearch, extensionPath: base.database.path } }, () => {
+    assert.throws(() => loadConfig(), /japaneseSearch\.extensionPath must be different from all database paths/);
+  });
+});

@@ -29,7 +29,7 @@ export function registerOcrWriteTool(server: McpServer, options: OcrWriteToolsOp
   const requiredScope = options.requiredScope ?? "ocr:write";
 
   server.registerTool("update_ocr_text", {
-    description: "Replace the complete OCR text for an unreviewed source_images record. Requires ocr:write. Records with reviewed != 0 are never changed.",
+    description: "Replace the complete OCR text for an unreviewed source_images record. Requires ocr:write. Only rows with reviewed = 0 are writable; NULL and all non-zero values are protected.",
     inputSchema: updateOcrTextSchema
   }, async ({ id, newText }, extra) => {
     const authInfo = extra?.http?.authInfo;
