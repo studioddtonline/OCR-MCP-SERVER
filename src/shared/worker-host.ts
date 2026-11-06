@@ -27,6 +27,11 @@ export interface WorkerHostOptions<TMessage, TReady> {
   workerFactory: () => WorkerThreadLike;
   startupTimeoutMs: number;
   onMessage: (generation: WorkerGeneration<TReady>, message: TMessage) => void;
+  /**
+   * WorkerHost detaches and initiates termination before invoking this callback.
+   * Call `terminate(generation)` only when the feature must await that same operation
+   * (for example, to prevent a replacement Worker from overlapping the failed one).
+   */
   onFailure: (generation: WorkerGeneration<TReady>, failure: WorkerHostFailure) => void;
 }
 
@@ -176,6 +181,11 @@ export class WorkerHost<TMessage, TReady> {
       state.rejectReady(this.failureError(failure));
     }
 
+    // Failure detaches the generation and owns its cleanup. Attach a rejection
+    // handler immediately; feature callbacks may still await the same Promise.
+    const termination = this.terminate(state.generation);
+    void termination.catch(() => undefined);
+
     this.options.onFailure(state.generation, failure);
   }
 
@@ -184,6 +194,7 @@ export class WorkerHost<TMessage, TReady> {
       case "error": return failure.error;
       case "exit": return new Error(`Worker exited unexpectedly with code ${failure.code}`);
       case "startup-timeout": return new Error(`Worker startup exceeded ${failure.timeoutMs} ms`);
+      default: return assertNever(failure);
     }
   }
 
@@ -197,4 +208,8 @@ export class WorkerHost<TMessage, TReady> {
     if (!state) throw new Error("Worker generation does not belong to this host");
     return state;
   }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unexpected WorkerHost failure: ${JSON.stringify(value)}`);
 }

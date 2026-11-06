@@ -49,6 +49,25 @@ interface QueuedSearch {
   settled: boolean;
 }
 
+type WorkerLifecycle =
+  | { kind: "starting"; restartAttempts: number }
+  | { kind: "ready"; restartAttempts: number }
+  | { kind: "idle"; restartAttempts: number; startupFailurePending: boolean }
+  | {
+      kind: "terminating";
+      restartAttempts: number;
+      startupFailurePending: boolean;
+    }
+  | { kind: "backoff"; restartAttempts: number; timer: NodeJS.Timeout }
+  | { kind: "dead"; reason: "startup" | "retry-exhausted" }
+  | { kind: "closed" };
+
+interface RepositoryState {
+  lifecycle: WorkerLifecycle;
+  /** The queue pump is an orthogonal async dispatch lock, not a Worker lifecycle phase. */
+  pumping: boolean;
+}
+
 type WorkerMessage =
   | { type: "ready"; metadata: WorkerMetadata }
   | { type: "startup-error"; message: string }
@@ -65,6 +84,10 @@ const DEFAULT_RESTART_BASE_DELAY_MS = 250;
 const DEFAULT_RESTART_MAX_DELAY_MS = 8_000;
 const DEFAULT_MAX_RESTART_ATTEMPTS = 5;
 
+function assertNever(value: never): never {
+  throw new Error(`Unexpected Japanese search lifecycle state: ${JSON.stringify(value)}`);
+}
+
 /**
  * Worker-backed reader for the separate sqlite-vaporetto index.
  * Requests are dispatched one at a time. Queue wait does not consume the execution timeout,
@@ -75,13 +98,13 @@ export class JapaneseSearchRepository {
   private readonly queue: QueuedSearch[] = [];
   private active: QueuedSearch | undefined;
   private nextId = 1;
-  private restartPromise: Promise<void> | undefined;
-  private restartTimer: NodeJS.Timeout | undefined;
-  private restartAttempts = 0;
-  private restartPendingForStartupFailure = false;
-  private pumping = false;
-  private closed = false;
-  private startupFailed = false;
+  private state: RepositoryState = {
+    lifecycle: { kind: "starting", restartAttempts: 0 },
+    pumping: false,
+  };
+  private get closed(): boolean {
+    return this.state.lifecycle.kind === "closed";
+  }
 
   private constructor(private readonly options: JapaneseSearchOptions) {
     const factory: (url: URL, workerOptions: WorkerOptions) => WorkerThreadLike =
@@ -133,8 +156,9 @@ export class JapaneseSearchRepository {
 
   close(): void {
     if (this.closed) return;
-    this.closed = true;
-    this.clearRestartTimer();
+    const lifecycle = this.state.lifecycle;
+    if (lifecycle.kind === "backoff") clearTimeout(lifecycle.timer);
+    this.state.lifecycle = { kind: "closed" };
     if (this.active) this.finishEntry(this.active, undefined, new ClientSafeError("Japanese search is unavailable."));
     for (const entry of this.queue.splice(0)) {
       this.finishEntry(entry, undefined, new ClientSafeError("Japanese search is unavailable."));
@@ -150,25 +174,47 @@ export class JapaneseSearchRepository {
 
   private startWorker(): void {
     if (this.closed) return;
+    const attempts = this.currentRestartAttempts();
+    this.state.lifecycle = { kind: "starting", restartAttempts: attempts };
     this.workerHost.start();
   }
 
   private pump(): void {
-    if (this.pumping || this.active || this.closed || this.queue.length === 0) return;
-    if (this.startupFailed) {
-      this.failQueued(new ClientSafeError("Japanese search is unavailable."));
-      return;
+    const lifecycle = this.state.lifecycle;
+    if (this.state.pumping || this.active || this.queue.length === 0) return;
+    switch (lifecycle.kind) {
+      case "dead":
+        this.failQueued(new ClientSafeError(lifecycle.reason === "retry-exhausted"
+          ? "Japanese search is unavailable after repeated worker failures; restart the server."
+          : "Japanese search is unavailable."));
+        return;
+      case "closed":
+      case "terminating":
+      case "backoff":
+        return;
+      case "starting":
+      case "ready":
+      case "idle":
+        break;
+      default:
+        assertNever(lifecycle);
     }
-    if (this.restartPromise || this.restartTimer) return;
     if (!this.workerHost.current) {
-      this.scheduleWorkerRestart("a queued request needs a worker", undefined, this.restartPendingForStartupFailure);
+      if (lifecycle.kind === "idle") {
+        this.scheduleWorkerRestart("a queued request needs a worker", undefined, lifecycle.startupFailurePending);
+      }
       return;
     }
-    this.pumping = true;
+    this.state.pumping = true;
     void this.dispatchNext().finally(() => {
-      this.pumping = false;
+      this.state.pumping = false;
       if (!this.active && !this.closed && this.queue.length > 0) this.pump();
     });
+  }
+
+  private currentRestartAttempts(): number {
+    const lifecycle = this.state.lifecycle;
+    return "restartAttempts" in lifecycle ? lifecycle.restartAttempts : 0;
   }
 
   private async dispatchNext(): Promise<void> {
@@ -211,7 +257,7 @@ export class JapaneseSearchRepository {
       if (this.workerHost.resolveReady(generation, message.metadata)) {
         // The retry budget protects against failures before ready. A healthy boot starts
         // a fresh budget, so slow queries cannot permanently exhaust worker recovery.
-        this.restartAttempts = 0;
+        this.state.lifecycle = { kind: "ready", restartAttempts: 0 };
         this.options.log?.("[japanese-search] worker ready", {
           initializationMs: Date.now() - generation.startedAt,
           indexedAt: message.metadata.indexed_at,
@@ -226,7 +272,7 @@ export class JapaneseSearchRepository {
       this.options.log?.("[japanese-search] worker could not open the index:", message.message, {
         initializationMs: Date.now() - generation.startedAt,
       });
-      this.startupFailed = true;
+      this.state.lifecycle = { kind: "dead", reason: "startup" };
       void this.workerHost.terminate(generation).catch((error) => {
         this.options.log?.("[japanese-search] worker termination failed:", error);
       });
@@ -280,15 +326,13 @@ export class JapaneseSearchRepository {
     this.options.log?.("[japanese-search] worker failure:", error.message);
 
     if (failure.type === "startup-timeout") {
-      this.startupFailed = true;
+      this.state.lifecycle = { kind: "dead", reason: "startup" };
       if (this.active) {
         this.finishEntry(this.active, undefined, new ClientSafeError("Japanese search is unavailable."));
         this.active = undefined;
       }
       this.failQueued(new ClientSafeError("Japanese search is unavailable."));
-      void this.workerHost.terminate(generation).catch((terminationError) => {
-        this.options.log?.("[japanese-search] worker termination failed:", terminationError);
-      });
+      // WorkerHost already initiates termination for startup-timeout failures.
       return;
     }
 
@@ -306,23 +350,32 @@ export class JapaneseSearchRepository {
     countsTowardStartupRetryBudget = false,
   ): void {
     if (this.closed) return;
+    const lifecycle = this.state.lifecycle;
+    if (lifecycle.kind === "dead" || lifecycle.kind === "closed") return;
     const oldWorker = workerToTerminate ?? this.workerHost.current;
+    const restartAttempts = this.currentRestartAttempts();
+    const startupFailurePending = lifecycle.kind === "idle" && lifecycle.startupFailurePending;
+
     if (this.queue.length === 0) {
-      if (countsTowardStartupRetryBudget) this.restartPendingForStartupFailure = true;
+      const pending = startupFailurePending || countsTowardStartupRetryBudget;
       if (oldWorker) {
-        // Track termination even while idle. A request arriving before terminate()
-        // settles must not start a replacement alongside the old Worker.
-        let termination: Promise<void>;
-        termination = this.workerHost.terminate(oldWorker)
-          .then(() => undefined)
-          .catch((error) => {
-            this.options.log?.("[japanese-search] worker termination failed:", error);
-          })
-          .then(() => {
-            if (this.restartPromise === termination) this.restartPromise = undefined;
-            this.pump();
-          });
-        this.restartPromise = termination;
+        const termination = this.workerHost.terminate(oldWorker).catch((error) => {
+          this.options.log?.("[japanese-search] worker termination failed:", error);
+          return 0;
+        });
+        const terminating: WorkerLifecycle = {
+          kind: "terminating",
+          restartAttempts,
+          startupFailurePending: pending,
+        };
+        this.state.lifecycle = terminating;
+        void termination.then(() => {
+          if (this.state.lifecycle !== terminating) return;
+          this.state.lifecycle = { kind: "idle", restartAttempts, startupFailurePending: pending };
+          this.pump();
+        });
+      } else {
+        this.state.lifecycle = { kind: "idle", restartAttempts, startupFailurePending: pending };
       }
       return;
     }
@@ -335,61 +388,64 @@ export class JapaneseSearchRepository {
     workerToTerminate?: WorkerGeneration<WorkerMetadata>,
     countsTowardStartupRetryBudget = false,
   ): void {
-    if (this.closed || this.startupFailed || this.queue.length === 0 || this.restartPromise || this.restartTimer) return;
+    const current = this.state.lifecycle;
+    if (this.closed || current.kind === "dead" || current.kind === "closed" ||
+        this.queue.length === 0 || current.kind === "terminating" || current.kind === "backoff") return;
 
     const maxAttempts = this.options.maxRestartAttempts ?? DEFAULT_MAX_RESTART_ATTEMPTS;
-    if (countsTowardStartupRetryBudget && this.restartAttempts >= maxAttempts) {
-      // Keep the startup-failure marker set: future demand must not bypass the exhausted
-      // budget after the current queue has been rejected.
-      this.restartPendingForStartupFailure = true;
-      // Even when the startup retry budget is exhausted, detach and terminate the failed
-      // generation before failing callers.
-      if (workerToTerminate) {
-        void this.workerHost.terminate(workerToTerminate).catch((error) => {
-          this.options.log?.("[japanese-search] worker termination failed:", error);
-        });
-      }
+    let restartAttempts = this.currentRestartAttempts();
+    if (countsTowardStartupRetryBudget && restartAttempts >= maxAttempts) {
+      // A WorkerHost failure already initiated termination; no replacement is started here.
+      this.state.lifecycle = { kind: "dead", reason: "retry-exhausted" };
       this.options.log?.("[japanese-search] worker restart limit reached; failing queued searches", {
-        attempts: this.restartAttempts,
+        attempts: restartAttempts,
         maxAttempts,
       });
       this.failQueued(new ClientSafeError("Japanese search is unavailable after repeated worker failures; restart the server."));
       return;
     }
 
-    if (countsTowardStartupRetryBudget) {
-      this.restartAttempts += 1;
-      this.restartPendingForStartupFailure = false;
-    }
+    if (countsTowardStartupRetryBudget) restartAttempts += 1;
     const baseDelayMs = this.options.restartBaseDelayMs ?? DEFAULT_RESTART_BASE_DELAY_MS;
     const maxDelayMs = this.options.restartMaxDelayMs ?? DEFAULT_RESTART_MAX_DELAY_MS;
-    const retryExponent = Math.max(0, this.restartAttempts - 1);
+    const retryExponent = Math.max(0, restartAttempts - 1);
     const delayMs = Math.min(baseDelayMs * (2 ** retryExponent), maxDelayMs);
     this.options.log?.("[japanese-search] scheduling worker restart", {
       reason,
-      attempt: this.restartAttempts,
+      attempt: restartAttempts,
       maxAttempts,
       delayMs,
       queuedRequests: this.queue.length,
     });
 
+    // WorkerHost returns the same termination Promise for repeated calls on a generation.
+    // The lifecycle state object, rather than a self-referential Promise chain, guards
+    // against stale completion callbacks.
     const termination = workerToTerminate
       ? this.workerHost.terminate(workerToTerminate).catch((error) => {
         this.options.log?.("[japanese-search] worker termination failed:", error);
+        return 0;
       })
-      : Promise.resolve();
+      : Promise.resolve(0);
+    const terminating: WorkerLifecycle = {
+      kind: "terminating",
+      restartAttempts,
+      startupFailurePending: false,
+    };
+    this.state.lifecycle = terminating;
 
-    let restart: Promise<void>;
-    restart = termination.then(() => {
-      if (this.restartPromise === restart) this.restartPromise = undefined;
-      if (this.closed || this.startupFailed || this.queue.length === 0) {
+    void termination.then(() => {
+      if (this.state.lifecycle !== terminating) return;
+      if (this.closed || this.queue.length === 0) {
+        this.state.lifecycle = { kind: "idle", restartAttempts, startupFailurePending: false };
         this.pump();
         return;
       }
 
-      this.restartTimer = setTimeout(() => {
-        this.restartTimer = undefined;
-        if (this.closed || this.startupFailed || this.queue.length === 0) {
+      const timer = setTimeout(() => {
+        if (this.state.lifecycle !== backoff) return;
+        this.state.lifecycle = { kind: "idle", restartAttempts, startupFailurePending: false };
+        if (this.closed || this.queue.length === 0) {
           this.pump();
           return;
         }
@@ -400,13 +456,9 @@ export class JapaneseSearchRepository {
           this.scheduleWorkerRestart("worker spawn failed", undefined, true);
         }
       }, delayMs);
-      this.restartTimer.unref();
-    });
-    this.restartPromise = restart;
-    void restart.catch((error) => {
-      if (this.restartPromise === restart) this.restartPromise = undefined;
-      this.options.log?.("[japanese-search] worker restart failed:", error);
-      this.pump();
+      timer.unref();
+      const backoff: WorkerLifecycle = { kind: "backoff", restartAttempts, timer };
+      this.state.lifecycle = backoff;
     });
   }
 
@@ -465,8 +517,4 @@ export class JapaneseSearchRepository {
     for (const entry of this.queue.splice(0)) this.finishEntry(entry, undefined, error);
   }
 
-  private clearRestartTimer(): void {
-    if (this.restartTimer) clearTimeout(this.restartTimer);
-    this.restartTimer = undefined;
-  }
 }

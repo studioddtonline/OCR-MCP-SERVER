@@ -193,6 +193,42 @@ test("an idle worker failure does not respawn until a new request needs it", asy
   }
 });
 
+test("an idle pre-ready worker failure is retried only after demand arrives", async () => {
+  const dir = createTempDir("japanese-search-idle-startup-failure-");
+  const workers: FakeJapaneseWorker[] = [];
+  const schedules: Array<Record<string, unknown>> = [];
+  const repo = JapaneseSearchRepository.open(fakeRepositoryOptions(dir, workers, {
+    autoReady: false,
+    restartBaseDelayMs: 2,
+    log: (...args) => {
+      if (args[0] === "[japanese-search] scheduling worker restart" && args[1] && typeof args[1] === "object") {
+        schedules.push(args[1] as Record<string, unknown>);
+      }
+    },
+  }));
+  const keepAlive = setTimeout(() => undefined, 1000);
+  try {
+    await waitUntil(() => workers.length === 1);
+    workers[0]!.emit("error", new Error("idle startup failure"));
+    await waitUntil(() => workers[0]!.terminated);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(workers.length, 1, "pre-ready idle failure must not immediately restart");
+
+    const pending = repo.search({ query: "demand", mode: "any", limit: 5, offset: 0 });
+    await waitUntil(() => workers.length === 2);
+    assert.deepEqual(schedules.map((item) => item.attempt), [1]);
+    workers[1]!.emit("message", { type: "ready", metadata: fakeMetadata });
+    await waitUntil(() => workers[1]!.posted.length === 1);
+    const id = workers[1]!.posted[0]!.id as number;
+    workers[1]!.respond(id);
+    assert.deepEqual(await pending, { id });
+  } finally {
+    clearTimeout(keepAlive);
+    repo.close();
+    removeTempDir(dir);
+  }
+});
+
 test("Japanese startup failures use a bounded retry count and exponential backoff", async () => {
   const dir = createTempDir("japanese-search-restart-limit-");
   const workers: FakeJapaneseWorker[] = [];

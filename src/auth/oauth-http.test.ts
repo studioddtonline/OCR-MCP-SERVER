@@ -59,6 +59,23 @@ test("OAuth CORS preflight keeps the allowed origin, methods, headers, and max a
   } finally { t.cleanup(); }
 });
 
+test("DCR rejects JSON values that are not metadata objects without throwing", async () => {
+  const t = setupOAuth();
+  try {
+    for (const body of ["null", "[]", '"metadata"', "42", "true"]) {
+      const response = await t.handler.fetch(new Request(`${BASE}/register`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      }));
+      assert.equal(response?.status, 400, `body ${body} should be rejected as client metadata`);
+      assert.deepEqual(await response!.json(), { error: "invalid_client_metadata" });
+    }
+  } finally {
+    t.cleanup();
+  }
+});
+
 test("the old /login route and cookie-based login no longer exist", async () => {
   const t = setupOAuth();
   try {

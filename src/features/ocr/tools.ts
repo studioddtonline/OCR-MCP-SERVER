@@ -36,6 +36,24 @@ function withJsonSchema<S extends z.ZodType>(schema: S, jsonSchema: Record<strin
   } as Pick<S, "~standard">;
 }
 
+// The advertised search_ocr schema depends only on (schema, maxLimit); build the wrapper once
+// instead of for every per-request McpServer.
+const searchOcrInputSchemaCache = new WeakMap<object, Map<number, unknown>>();
+
+function searchOcrInputSchema<S extends z.ZodType>(schema: S, maxLimit: number): Pick<S, "~standard"> {
+  let byLimit = searchOcrInputSchemaCache.get(schema);
+  if (!byLimit) {
+    byLimit = new Map();
+    searchOcrInputSchemaCache.set(schema, byLimit);
+  }
+  let wrapper = byLimit.get(maxLimit);
+  if (!wrapper) {
+    wrapper = withJsonSchema(schema, createSearchOcrJsonSchema(maxLimit));
+    byLimit.set(maxLimit, wrapper);
+  }
+  return wrapper as Pick<S, "~standard">;
+}
+
 function createSearchOcrJsonSchema(maxLimit: number): Record<string, unknown> {
   const queryNodeRef = { $ref: "#/$defs/QueryNode" };
   const termValue = {
@@ -159,7 +177,7 @@ export function registerOcrTools(
 
   server.registerTool("search_ocr", {
     description: `Search OCR text with either a plain string or a nested AND/OR/NOT query. Each term is evaluated independently: 1–2 Unicode code points use exact, case-sensitive substring matching in OCR text; terms of 3+ code points use an exact phrase-style FTS5 trigram lookup. Structured queries support arbitrary nested {type:'and'|'or', nodes:[...]} and {type:'not', node:...} expressions, with up to ${MAX_QUERY_NODES} nodes and ${MAX_QUERY_DEPTH} levels. Each term may contain at most ${MAX_QUERY_TERM_CODE_POINTS} Unicode code points, and AND/OR nodes may have at most ${MAX_QUERY_CHILDREN} children. A query must contain at least one positive term; NOT-only queries are rejected. One- and two-character terms scan the OCR table and may be slower; terms are treated as literal values, never as raw SQL or FTS5 syntax. Optional label and reviewed filters apply to the whole expression. Results are in record-ID order and include a snippet and nextAfterId; pass nextAfterId as afterId for the next page. Use get_ocr_record for full OCR text.`,
-    inputSchema: withJsonSchema(schemas.searchOcr, createSearchOcrJsonSchema(options.maxLimit))
+    inputSchema: searchOcrInputSchema(schemas.searchOcr, options.maxLimit)
   }, async ({ query, label, reviewed, limit, offset, afterId }) => guarded("ocr/search_ocr", fallback, () =>
     textResult(repo.search({
       query, label, reviewed,

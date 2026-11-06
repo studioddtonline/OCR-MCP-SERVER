@@ -10,15 +10,32 @@ export interface JapaneseSearchToolOptions {
   maxLimit: number;
 }
 
-export function registerJapaneseSearchTool(server: McpServer, options: JapaneseSearchToolOptions): void {
-  const inputSchema = z.object({
+// Built once per maxLimit, not per request: the MCP SDK hands every HTTP request a fresh McpServer,
+// and constructing this chained Zod schema (about 30 clones) dominated the per-request registration cost.
+const inputSchemaByMaxLimit = new Map<number, ReturnType<typeof buildInputSchema>>();
+
+function buildInputSchema(maxLimit: number) {
+  return z.object({
     query: z.string().trim().min(1).max(500).describe("Japanese words or phrase. One-character queries are accepted, but results follow Vaporetto tokenization rather than arbitrary substring matching."),
     mode: z.enum(["any", "all"]).optional().describe("any: match any query token (broader recall); all: require every query token (AND). Defaults to any."),
     label: z.string().optional().describe("Optional exact source label (source_images.file_path). Use to restrict the search to one book."),
     reviewed: z.boolean().optional().describe("true matches reviewed/protected rows (any non-zero value or NULL); false matches only reviewed=0 rows."),
-    limit: z.number().int().min(1).max(options.maxLimit).optional(),
+    limit: z.number().int().min(1).max(maxLimit).optional(),
     offset: z.number().int().min(0).max(100000).optional().describe("Offset in the relevance-ranked result list. Searches run one at a time in a dedicated worker; queue wait does not count against the 20-second execution deadline. Prefer small offsets."),
   });
+}
+
+function japaneseInputSchema(maxLimit: number): ReturnType<typeof buildInputSchema> {
+  let schema = inputSchemaByMaxLimit.get(maxLimit);
+  if (!schema) {
+    schema = buildInputSchema(maxLimit);
+    inputSchemaByMaxLimit.set(maxLimit, schema);
+  }
+  return schema;
+}
+
+export function registerJapaneseSearchTool(server: McpServer, options: JapaneseSearchToolOptions): void {
+  const inputSchema = japaneseInputSchema(options.maxLimit);
 
   server.registerTool("search_ocr_japanese", {
     description: "Search an independently built Japanese full-text index using Vaporetto-pretokenized terms in an FTS5 index with BM25 ranking. Requests are queued FIFO and dispatched one at a time; the execution deadline begins only when a search starts in the worker. Unlike search_ocr, this accepts one- or two-character queries and tokenizes Japanese. mode=any broadens recall; mode=all requires every token. Returns tokenization, OCR-text snippets with matches marked, review state, rank score, and nextOffset. The index is a snapshot of the OCR database: rebuild it with `npm run japanese-search:index` after OCR text or review-state changes. This is token-based search, not arbitrary substring matching.",

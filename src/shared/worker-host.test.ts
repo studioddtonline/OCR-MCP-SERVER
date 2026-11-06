@@ -120,3 +120,31 @@ test("WorkerHost reports startup timeout once and detaches the generation", asyn
   await host.terminate(generation);
   assert.equal(workers[0]!.terminateCalls, 1);
 });
+
+test("WorkerHost automatically terminates failed and startup-timeout generations", async () => {
+  const workers: FakeWorker[] = [];
+  const failures: string[] = [];
+  const host = new WorkerHost<{ type: string }, void>({
+    workerFactory: () => { const worker = new FakeWorker(); workers.push(worker); return worker; },
+    startupTimeoutMs: 5,
+    onMessage: () => undefined,
+    onFailure: (_generation, failure) => failures.push(failure.type),
+  });
+
+  const failed = host.start();
+  workers[0]!.emit("error", new Error("worker failed"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(failures, ["error"]);
+  assert.equal(workers[0]!.terminateCalls, 1, "error failure should initiate termination without caller cleanup");
+
+  const timedOut = host.start();
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  await assert.rejects(timedOut.ready, /startup exceeded 5 ms/);
+  assert.deepEqual(failures, ["error", "startup-timeout"]);
+  assert.equal(workers[1]!.terminateCalls, 1, "startup timeout should terminate the worker automatically");
+
+  await host.terminate(failed);
+  await host.terminate(timedOut);
+  assert.equal(workers[0]!.terminateCalls, 1, "explicit cleanup must reuse auto-termination");
+  assert.equal(workers[1]!.terminateCalls, 1, "explicit cleanup must reuse auto-termination");
+});

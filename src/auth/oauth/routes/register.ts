@@ -8,7 +8,12 @@ export async function handleRegister(ctx: OAuthAvailableContext, request: Reques
 
   let input: Record<string, unknown>;
   try {
-    input = (await request.json()) as Record<string, unknown>;
+    const parsed: unknown = await request.json();
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      console.error("[oauth/register] rejected: metadata must be a JSON object");
+      return ctx.oauthError("invalid_client_metadata");
+    }
+    input = parsed as Record<string, unknown>;
   } catch (error) {
     console.error("[oauth/register] invalid JSON", error);
     return ctx.oauthError("invalid_client_metadata");

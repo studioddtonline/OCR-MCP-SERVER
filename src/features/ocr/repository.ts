@@ -140,7 +140,6 @@ function makeSnippet(text: string | null, queryTerms: string[], maxLength: numbe
 export class OcrRepository {
   // Search ASTs can produce many SQL shapes. Keep the prepared-statement cache bounded.
   private readonly preparedStatements = new Map<string, ReturnType<DatabaseSync["prepare"]>>();
-
   constructor(
     private readonly db: DatabaseSync | undefined,
     private readonly unavailableReason = "OCR database is unavailable",

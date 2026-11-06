@@ -1,4 +1,5 @@
 import type { AppConfig } from "../config/types.js";
+import { DEFAULT_JAPANESE_SEARCH_BUSY_TIMEOUT_MS, DEFAULT_JAPANESE_SEARCH_MAX_LIMIT } from "../config/constants.js";
 import { openReadOnlyDatabase } from "../features/ocr/sqlite.js";
 import { OcrRepository } from "../features/ocr/repository.js";
 import { OcrWriteRepository, OCR_WRITE_BUSY_TIMEOUT_MS } from "../features/ocr/write-repository.js";
@@ -91,8 +92,8 @@ export function bootstrap(config: AppConfig, options: BootstrapOptions = {}): Ru
       japaneseSearch.repository = openJapaneseSearchRepository({
         indexPath: requiredPath(settings?.indexPath, "japaneseSearch.indexPath"),
         extensionPath: requiredPath(settings?.extensionPath, "japaneseSearch.extensionPath"),
-        busyTimeoutMs: settings?.busyTimeoutMs ?? 500,
-        maxLimit: settings?.maxLimit ?? 20,
+        busyTimeoutMs: settings?.busyTimeoutMs ?? DEFAULT_JAPANESE_SEARCH_BUSY_TIMEOUT_MS,
+        maxLimit: settings?.maxLimit ?? DEFAULT_JAPANESE_SEARCH_MAX_LIMIT,
         log,
       });
       log("[startup] Japanese sqlite-vaporetto worker launched; index validation is running asynchronously");

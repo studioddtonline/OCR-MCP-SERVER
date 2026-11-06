@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import type { AppConfig } from "../config/types.js";
+import { DEFAULT_JAPANESE_SEARCH_MAX_LIMIT } from "../config/constants.js";
 import type { McpRuntimeDependencies } from "./dependencies.js";
 import { SCOPE_WRITE } from "../auth/scopes.js";
 import { createOcrToolSchemas, registerOcrTools, type OcrToolSchemas } from "../features/ocr/tools.js";
@@ -49,7 +50,7 @@ export function createMcpServer(
     registerJapaneseSearchTool(server, {
       repository: runtime.japaneseSearch.repository,
       unavailableReason: runtime.japaneseSearch.unavailableReason,
-      maxLimit: config.japaneseSearch.maxLimit ?? 20,
+      maxLimit: config.japaneseSearch.maxLimit ?? DEFAULT_JAPANESE_SEARCH_MAX_LIMIT,
     });
   }
 
