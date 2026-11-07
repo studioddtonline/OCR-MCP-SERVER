@@ -120,6 +120,25 @@ test("Host header validation and removed routes", async () => {
 });
 
 
+test("a POST with an invalid Host header closes the connection before reading its body", async () => {
+  await withServer(async ({ port }) => {
+    const res = await new Promise<{ status: number; connection: string | undefined }>((resolve, reject) => {
+      const req = httpRequest({
+        host: "127.0.0.1", port, path: "/mcp", method: "POST",
+        headers: { host: "evil.example", "content-length": "4096" },
+      }, (response) => {
+        response.resume();
+        resolve({ status: response.statusCode ?? 0, connection: response.headers.connection });
+      });
+      req.on("error", reject);
+      req.write("x".repeat(4096));
+      req.end();
+    });
+    assert.equal(res.status, 400);
+    assert.equal(res.connection, "close");
+  });
+});
+
 /** Sends a chunked POST without Content-Length to exercise the streaming body cap. */
 function chunkedPost(port: number, path: string, headers: Record<string, string>, totalBytes: number) {
   return new Promise<{ status: number; connection: string | undefined }>((resolve, reject) => {
