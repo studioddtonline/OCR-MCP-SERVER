@@ -75,9 +75,9 @@ async function boundPostBody(request: Request): Promise<Request | Response> {
   }
 }
 
-/** Prevent reuse of a connection when an early response leaves a POST body unread. */
+/** Prevent reuse of a connection when an early response leaves a request body unread. */
 function closeIfBodyUnread(request: Request, response: Response): Response {
-  if (request.method !== "POST" || !request.body) return response;
+  if (!request.body) return response;
   const headers = new Headers(response.headers);
   headers.set("connection", "close");
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
