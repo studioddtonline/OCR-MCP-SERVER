@@ -55,6 +55,34 @@ async function capRequestBody(request: Request): Promise<Request | undefined> {
   });
 }
 
+/** Applies the body cap to a POST. Returns the bounded request, or the 413/400 response to send instead. */
+async function boundPostBody(request: Request): Promise<Request | Response> {
+  if (request.method !== "POST") return request;
+  try {
+    const bounded = await capRequestBody(request);
+    if (!bounded) {
+      return new Response("Request body exceeds the 1 MiB limit", {
+        status: 413,
+        headers: { "content-type": "text/plain; charset=utf-8", "connection": "close" },
+      });
+    }
+    return bounded;
+  } catch {
+    return new Response("Invalid request body", {
+      status: 400,
+      headers: { "content-type": "text/plain; charset=utf-8", "connection": "close" },
+    });
+  }
+}
+
+/** Prevent reuse of a connection when an early response leaves a POST body unread. */
+function closeIfBodyUnread(request: Request, response: Response): Response {
+  if (request.method !== "POST" || !request.body) return response;
+  const headers = new Headers(response.headers);
+  headers.set("connection", "close");
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
 
 /** Node HTTP transport and host/path/method routing; MCP composition and auth wiring live elsewhere. */
 export function startHttpServer(config: HttpServerConfig, mcpHandler: McpHttpHandler, oauth?: OAuthOptions) {
@@ -76,53 +104,55 @@ export function startHttpServer(config: HttpServerConfig, mcpHandler: McpHttpHan
         return new Response("Invalid Host header", { status: 400 });
       }
 
-      if (request.method === "POST") {
-        try {
-          const boundedRequest = await capRequestBody(request);
-          if (!boundedRequest) {
-            return new Response("Request body exceeds the 1 MiB limit", {
-              status: 413,
-              headers: { "content-type": "text/plain; charset=utf-8", "connection": "close" },
-            });
-          }
-          request = boundedRequest;
-        } catch {
-          return new Response("Invalid request body", { status: 400, headers: { "content-type": "text/plain; charset=utf-8" } });
-        }
+      const isMcpPath = url.pathname === config.server.mcpPath;
+
+      // MCP requests are authenticated before their body is read. Other POSTs are capped before
+      // OAuth routing, preserving the limit for OAuth endpoints and future OAuth routes.
+      let oauthRequest = request;
+      if (request.method === "POST" && !isMcpPath && oauthHandler) {
+        const bounded = await boundPostBody(request);
+        if (bounded instanceof Response) return bounded;
+        oauthRequest = bounded;
       }
 
       if (oauthHandler) {
-        const oauthResponse = await oauthHandler.fetch(request);
+        const oauthResponse = await oauthHandler.fetch(oauthRequest);
         if (oauthResponse) return oauthResponse;
       }
 
-      if (url.pathname !== config.server.mcpPath) {
-        return new Response("Not found", { status: 404 });
+      if (!isMcpPath) {
+        return closeIfBodyUnread(request, new Response("Not found", { status: 404 }));
       }
       if (authRequired && !authGate) {
         const reason = authGateway.unavailableReason();
         console.log("[oauth] MCP request rejected because authentication is unavailable:", reason);
-        return new Response("Authentication service temporarily unavailable", {
+        return closeIfBodyUnread(request, new Response("Authentication service temporarily unavailable", {
           status: 503,
           headers: { "content-type": "text/plain; charset=utf-8", "retry-after": "60" },
-        });
+        }));
       }
       if (!["POST", "GET", "DELETE"].includes(request.method)) {
-        return new Response("Method not allowed", { status: 405, headers: { Allow: "GET, POST, DELETE" } });
+        return closeIfBodyUnread(request, new Response("Method not allowed", {
+          status: 405, headers: { Allow: "GET, POST, DELETE" },
+        }));
       }
 
       // 認証なしモード (auth.mode === "none" のときだけここに到達する。上の authRequired ガードを参照)
-      if (!authGate) return mcpHandler.fetch(request);
+      if (!authGate) {
+        const bounded = await boundPostBody(request);
+        if (bounded instanceof Response) return bounded;
+        return mcpHandler.fetch(bounded);
+      }
 
       let auth: Awaited<ReturnType<typeof authGate>>;
       try {
         auth = await authGate(request);
       } catch (error) {
         console.log("[oauth] token verification failed due to a runtime error:", describeForLog(error));
-        return new Response("Authentication service temporarily unavailable", {
+        return closeIfBodyUnread(request, new Response("Authentication service temporarily unavailable", {
           status: 503,
           headers: { "content-type": "text/plain; charset=utf-8", "retry-after": "60" },
-        });
+        }));
       }
       if (auth instanceof Response) {
         if (auth.status === 401) {
@@ -130,11 +160,15 @@ export function startHttpServer(config: HttpServerConfig, mcpHandler: McpHttpHan
           if (protectedResourceMetadataUrl) {
             headers.set("WWW-Authenticate", `Bearer resource_metadata="${protectedResourceMetadataUrl}", scope="${advertisedScopes.join(" ")}"`);
           }
-          return new Response(auth.body, { status: auth.status, statusText: auth.statusText, headers });
+          return closeIfBodyUnread(request, new Response(auth.body, { status: auth.status, statusText: auth.statusText, headers }));
         }
-        return auth;
+        return closeIfBodyUnread(request, auth);
       }
-      return mcpHandler.fetch(request, { authInfo: auth });
+
+      // Authenticated: only now read and enforce the request body limit.
+      const bounded = await boundPostBody(request);
+      if (bounded instanceof Response) return bounded;
+      return mcpHandler.fetch(bounded, { authInfo: auth });
     },
   };
 

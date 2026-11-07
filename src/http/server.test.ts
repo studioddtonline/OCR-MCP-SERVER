@@ -88,7 +88,7 @@ test("OAuth access tokens and static tokens work side by side", async () => {
 });
 
 test("Host header validation and removed routes", async () => {
-  await withServer(async ({ port }) => {
+  await withServer(async ({ port, tokens }) => {
     const status = (path: string, host: string, method = "GET") => new Promise<number>((resolve, reject) => {
       const req = httpRequest({ host: "127.0.0.1", port, path, method, headers: { host } }, (res) => { res.resume(); resolve(res.statusCode ?? 0); });
       req.on("error", reject);
@@ -111,10 +111,115 @@ test("Host header validation and removed routes", async () => {
     assert.equal(mcpMethod.status, 405);
     assert.equal(mcpMethod.allow, "GET, POST, DELETE");
 
+    const api = tokens.create({ name: "body-cap", purpose: "api" }).token;
     const tooLarge = await fetch(`http://127.0.0.1:${port}/mcp`, {
-      method: "POST", headers: MCP_HEADERS, body: "x".repeat(MAX_HTTP_REQUEST_BODY_BYTES + 1),
+      method: "POST", headers: { ...MCP_HEADERS, authorization: `Bearer ${api}` }, body: "x".repeat(MAX_HTTP_REQUEST_BODY_BYTES + 1),
     });
     assert.equal(tooLarge.status, 413, "the Node HTTP handler enforces the body cap even behind Caddy");
+  });
+});
+
+
+/** Sends a chunked POST without Content-Length to exercise the streaming body cap. */
+function chunkedPost(port: number, path: string, headers: Record<string, string>, totalBytes: number) {
+  return new Promise<{ status: number; connection: string | undefined }>((resolve, reject) => {
+    let settled = false;
+    const req = httpRequest(
+      { host: "127.0.0.1", port, path, method: "POST", headers: { ...headers, "transfer-encoding": "chunked" } },
+      (res) => {
+        res.resume();
+        settled = true;
+        resolve({ status: res.statusCode ?? 0, connection: res.headers.connection });
+      },
+    );
+    req.on("error", (error) => { if (!settled) reject(error); });
+    const chunk = Buffer.alloc(64 * 1024, 0x78);
+    for (let sent = 0; sent < totalBytes; sent += chunk.length) req.write(chunk);
+    req.end();
+  });
+}
+
+const OVERSIZE = MAX_HTTP_REQUEST_BODY_BYTES * 2;
+
+test("unauthenticated oversized MCP chunked POST is rejected before body buffering", async () => {
+  await withServer(async ({ port }) => {
+    const res = await chunkedPost(port, "/mcp", MCP_HEADERS, OVERSIZE);
+    assert.equal(res.status, 401, "auth should run before body cap");
+    assert.equal(res.connection, "close");
+  });
+});
+
+test("invalid-token oversized MCP chunked POST returns 401, not 413", async () => {
+  await withServer(async ({ port }) => {
+    const res = await chunkedPost(port, "/mcp", { ...MCP_HEADERS, authorization: "Bearer totally-not-a-token" }, OVERSIZE);
+    assert.equal(res.status, 401);
+    assert.equal(res.connection, "close");
+  });
+});
+
+test("authenticated oversized MCP chunked POST remains capped at 1 MiB", async () => {
+  await withServer(async ({ port, tokens }) => {
+    const api = tokens.create({ name: "chunked", purpose: "api" }).token;
+    const res = await chunkedPost(port, "/mcp", { ...MCP_HEADERS, authorization: `Bearer ${api}` }, OVERSIZE);
+    assert.equal(res.status, 413);
+    assert.equal(res.connection, "close");
+  });
+});
+
+test("oversized OAuth POST remains capped before handler", async () => {
+  await withServer(async ({ port }) => {
+    const res = await chunkedPost(port, "/token", { "content-type": "application/x-www-form-urlencoded" }, OVERSIZE);
+    assert.equal(res.status, 413);
+    assert.equal(res.connection, "close");
+  });
+});
+
+test("OAuth token endpoint still receives a normal-size POST body", async () => {
+  await withServer(async ({ url }) => {
+    const base = url.slice(0, -"/mcp".length);
+    const res = await fetch(`${base}/token`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "grant_type=authorization_code&client_id=unknown",
+    });
+    assert.equal(res.status, 401, "unknown client response confirms request reached OAuth handler");
+  });
+});
+
+test("auth.mode none retains the MCP POST body cap", async () => {
+  const db = createOcrFixtureDatabase(":memory:", []);
+  const config = { ...testConfig, auth: { mode: "none" as const } };
+  const server: Server = startHttpServer(config, createMcpHttpHandler(createTestMcpRuntime(new OcrRepository(db)), config));
+  const { port } = await waitForTestServer(server);
+  try {
+    const tooLarge = await chunkedPost(port, "/mcp", MCP_HEADERS, OVERSIZE);
+    assert.equal(tooLarge.status, 413);
+    const small = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: "POST", headers: MCP_HEADERS, body: JSON.stringify(statsCall),
+    });
+    assert.equal(small.status, 200);
+  } finally {
+    await closeTestServer(server);
+    db.close();
+  }
+});
+
+test("a POST with an unsupported MCP method closes the connection before reading its body", async () => {
+  await withServer(async ({ port }) => {
+    const res = await new Promise<{ status: number; connection: string | undefined }>((resolve, reject) => {
+      const req = httpRequest({
+        host: "127.0.0.1", port, path: "/mcp", method: "PUT",
+        headers: { host: "ddns.s13e.net", "content-length": "4096" },
+      }, (response) => {
+        response.resume();
+        resolve({ status: response.statusCode ?? 0, connection: response.headers.connection });
+      });
+      req.on("error", reject);
+      req.write("x".repeat(4096));
+      req.end();
+    });
+    assert.equal(res.status, 405);
+    assert.equal(res.connection, "close");
   });
 });
 
