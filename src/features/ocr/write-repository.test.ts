@@ -98,8 +98,10 @@ test("writes unreviewed OCR, records complete history, and leaves FTS maintenanc
     assert.ok(result.changedAt && !Number.isNaN(Date.parse(result.changedAt)));
 
     assert.deepEqual(reader.getById(2, 20000)?.ocr_text, "Revised OCR passage");
-    assert.equal(reader.search({ query: "Revised OCR", limit: 10, offset: 0, snippetLength: 80 }).returned, 1);
-    assert.equal(reader.search({ query: "Original OCR", limit: 10, offset: 0, snippetLength: 80 }).returned, 0);
+    const revisedMatches = readerDb.prepare("SELECT rowid FROM images_fts WHERE images_fts MATCH ?").all('"Revised OCR"') as Array<{ rowid: number }>;
+    const originalMatches = readerDb.prepare("SELECT rowid FROM images_fts WHERE images_fts MATCH ?").all('"Original OCR"') as Array<{ rowid: number }>;
+    assert.deepEqual(revisedMatches.map((row) => row.rowid), [2], "the BOOK-OCR trigger updates the shared FTS table");
+    assert.deepEqual(originalMatches, [], "the old OCR text is removed from the shared FTS table");
 
     const history = readerDb.prepare("SELECT source_image_id, old_text, new_text, changed_at FROM mcp_ocr_edit_history WHERE id = ?").get(result.historyId) as {
       source_image_id: number; old_text: string; new_text: string; changed_at: string;
