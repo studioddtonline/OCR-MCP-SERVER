@@ -192,7 +192,7 @@ export function bootstrap(config: AppConfig, options: BootstrapOptions = {}): Ru
     originalImagesChecked,
     close() {
       if (cleanupTimer) clearInterval(cleanupTimer);
-      for (const closeStore of [() => originalImages.close(), () => db?.close(), () => ocrWrite.repository?.close(), () => search.repository?.close(), () => oauthStore?.close(), () => tokenStore?.close()]) {
+      for (const closeStore of [() => originalImages.close(), () => search.repository?.close(), () => repo.close(), () => db?.close(), () => ocrWrite.repository?.close(), () => oauthStore?.close(), () => tokenStore?.close()]) {
         try { closeStore(); } catch (error) { logError("[shutdown] failed to close a database:", describeForLog(error)); }
       }
     },
