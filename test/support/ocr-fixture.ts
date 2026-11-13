@@ -5,7 +5,7 @@ export const SOURCE_IMAGES_SCHEMA_SQL = `CREATE TABLE source_images (
   file_path TEXT,
   file_name TEXT,
   ocr_text TEXT,
-  reviewed INTEGER NOT NULL DEFAULT 0
+  reviewed INTEGER DEFAULT 0
 );`;
 
 export const IMAGES_FTS_SCHEMA_SQL = `CREATE VIRTUAL TABLE images_fts USING fts5(
@@ -17,7 +17,7 @@ export interface OcrFixtureRow {
   label: string;
   fileName: string;
   text: string;
-  reviewed: number;
+  reviewed: number | null;
 }
 
 export const DEFAULT_OCR_ROWS: OcrFixtureRow[] = [
