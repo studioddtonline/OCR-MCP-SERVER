@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import type { AppConfig } from "../config/types.js";
 import type { OcrRepository } from "../features/ocr/repository.js";
+import type { OcrSearch } from "ocr-search";
 import { ClientSafeError } from "../shared/errors.js";
 import { testConfig } from "../../test/support/oauth-kit.js";
 import { startHttpServer } from "../http/server.js";
@@ -257,6 +258,64 @@ test("search_ocr_japanese is registered only when enabled and fails safely if it
     const result = (JSON.parse(data.slice(6)) as { result: { isError?: boolean; content: Array<{ text?: string }> } }).result;
     assert.equal(result.isError, true);
     assert.deepEqual(JSON.parse(result.content.map((part) => part.text ?? "").join("\n")), { error: "Japanese search is unavailable." });
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+
+test("search_ocr_japanese delegates to the OCR-SEARCH Japanese API", async () => {
+  const config: AppConfig = {
+    ...testConfig,
+    auth: { mode: "none" },
+    japaneseSearch: {
+      enabled: true,
+      indexPath: "/tmp/japanese-index.sqlite",
+      extensionPath: "/tmp/sqlite-vaporetto.so",
+      busyTimeoutMs: 500,
+      maxLimit: 20,
+    },
+  };
+  let received: unknown;
+  const expected = {
+    query: "東京",
+    mode: "all",
+    queryTokens: ["東京"],
+    returned: 1,
+    limit: 5,
+    offset: 2,
+    nextOffset: null,
+    index: { tokenizer: "vaporetto-pretokenized-unicode61", indexedAt: "2026-11-13T00:00:00.000Z", indexedRecords: 1, sourceMaxId: 1 },
+    results: [{ id: 1, label: "Book A", fileName: "001.webp", reviewed: 1, score: -1.25, snippet: "〔東京〕の記録" }],
+  };
+  const search = {
+    search: async () => ({ results: [], returned: 0, offset: 0, limit: 20, nextAfterId: null }),
+    searchJapanese: async (request: unknown) => { received = request; return expected; },
+    close: () => undefined,
+  } as unknown as OcrSearch;
+  const runtime = createTestMcpRuntime({
+    getById: () => null,
+    listLabels: () => [],
+    getStats: () => ({ total: 0, reviewed: 0, unreviewed: 0, labels: 0 }),
+  } as unknown as OcrRepository, { search: { repository: search } });
+  const server = startHttpServer(config, createMcpHttpHandler(runtime, config));
+  await once(server, "listening");
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({
+        jsonrpc: "2.0", id: 1, method: "tools/call",
+        params: { name: "search_ocr_japanese", arguments: { query: "東京", mode: "all", limit: 5, offset: 2 } },
+      }),
+    });
+    const data = (await response.text()).split("\\n").find((line) => line.startsWith("data: "))!;
+    const result = (JSON.parse(data.slice(6)) as { result: { isError?: boolean; content: Array<{ text?: string }> } }).result;
+    assert.equal(result.isError, undefined);
+    assert.deepEqual(JSON.parse(result.content.map((part) => part.text ?? "").join("\\n")), expected);
+    assert.deepEqual(received, { query: "東京", mode: "all", label: undefined, reviewed: undefined, limit: 5, offset: 2 });
   } finally {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
