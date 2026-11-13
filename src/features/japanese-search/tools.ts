@@ -38,7 +38,7 @@ export function registerJapaneseSearchTool(server: McpServer, options: JapaneseS
   const inputSchema = japaneseInputSchema(options.maxLimit);
 
   server.registerTool("search_ocr_japanese", {
-    description: "Search an independently built Japanese full-text index using Vaporetto-pretokenized terms in an FTS5 index with BM25 ranking. Requests are queued FIFO and dispatched one at a time; the execution deadline begins only when a search starts in the worker. Unlike search_ocr, this accepts one- or two-character queries and tokenizes Japanese. mode=any broadens recall; mode=all requires every token. Returns tokenization, OCR-text snippets with matches marked, review state, rank score, and nextOffset. The index is a snapshot of the OCR database: rebuild it with `npm run japanese-search:index` after OCR text or review-state changes. This is token-based search, not arbitrary substring matching.",
+    description: "Search the OCR-SEARCH Japanese index using Vaporetto-pretokenized terms and BM25 ranking. Requests are queued FIFO in a dedicated Worker. Unlike search_ocr, this accepts one- or two-character queries and tokenizes Japanese. mode=any broadens recall; mode=all requires every token. Returns query tokens, current source metadata and OCR snippets, review state, BM25 score, index metadata, and nextOffset. Candidate membership and ranking use the index snapshot; rebuild it with `npm run japanese-search:index` after OCR records or text change. This is token-based search, not arbitrary substring matching.",
     inputSchema,
   }, async ({ query, mode, label, reviewed, limit, offset }, ctx) => guarded(
     "ocr/search_ocr_japanese",
