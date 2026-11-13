@@ -8,7 +8,7 @@ import type { OriginalImageRepository } from "../features/original-images/reposi
 export interface Runtime {
   repo: OcrRepository;
   /** Shared search engine. It borrows the OCR DB; Runtime owns and closes that DB. */
-  search: { repository?: OcrSearch; unavailableReason?: string; japaneseUnavailableReason?: string };
+  search: { repository?: OcrSearch; unavailableReason?: string; unavailableMessage?: string; japaneseUnavailableReason?: string };
   oauth: OAuthOptions | undefined;
   ocrWrite: { enabled: boolean; repository?: OcrWriteRepository; unavailableReason?: string };
   originalImages: OriginalImageRepository;
