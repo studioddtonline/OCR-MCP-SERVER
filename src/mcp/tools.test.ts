@@ -19,9 +19,16 @@ import { createMcpToolSchemas } from "./tools.js";
 const SECRET = "/secret/place/ocr.sqlite";
 const raw = () => { throw new Error(`SQLITE_IOERR: disk I/O error while reading ${SECRET}`); };
 
-async function withRepo(repo: Partial<Record<keyof OcrRepository, unknown>>, run: (call: (name: string, args?: unknown) => Promise<{ isError?: boolean; text: string }>) => Promise<void>) {
+async function withRepo(
+  repo: Partial<Record<keyof OcrRepository, unknown>>,
+  run: (call: (name: string, args?: unknown) => Promise<{ isError?: boolean; text: string }>) => Promise<void>,
+  search?: OcrSearch,
+) {
   const config: AppConfig = { ...testConfig, auth: { mode: "none" } };
-  const server = startHttpServer(config, createMcpHttpHandler(createTestMcpRuntime(repo as unknown as OcrRepository), config));
+  const runtime = createTestMcpRuntime(repo as unknown as OcrRepository, {
+    search: search ? { repository: search } : undefined,
+  });
+  const server = startHttpServer(config, createMcpHttpHandler(runtime, config));
   await once(server, "listening");
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
   try {
@@ -42,14 +49,18 @@ async function withRepo(repo: Partial<Record<keyof OcrRepository, unknown>>, run
 }
 
 test("raw exceptions from the repository become a generic message; the local path never reaches the client", async () => {
-  await withRepo({ search: raw, getById: raw, listLabels: raw, getStats: raw }, async (call) => {
+  await withRepo({ getById: raw, listLabels: raw, getStats: raw }, async (call) => {
     for (const [tool, args] of [["search_ocr", { query: "sample" }], ["get_ocr_record", { id: 1 }], ["list_source_labels", {}], ["get_ocr_stats", {}]] as const) {
       const out = await call(tool, args);
       assert.equal(out.isError, true, tool);
       assert.deepEqual(JSON.parse(out.text), { error: "OCR database operation failed" }, tool);
       assert.ok(!out.text.includes("/secret") && !/SQLITE|I\/O/.test(out.text), `${tool}: ${out.text}`);
     }
-  });
+  }, {
+    search: async () => raw(),
+    searchJapanese: async () => { throw new Error("unused"); },
+    close: () => undefined,
+  } as unknown as OcrSearch);
 });
 
 test("ClientSafeError messages pass through unchanged", async () => {
@@ -97,12 +108,7 @@ test("search_ocr maxLimit is enforced independently for each configuration", () 
 
 test("search_ocr passes a nested boolean query to the repository", async () => {
   let receivedQuery: unknown;
-  await withRepo({
-    search: (options: { query: unknown }) => {
-      receivedQuery = options.query;
-      return { results: [{ id: 4, file_path: "Book A", file_name: "004.webp", reviewed: 0, snippet: "…宮崎監督…" }], returned: 1, offset: 0, limit: 20, nextAfterId: null };
-    }
-  }, async (call) => {
+  await withRepo({}, async (call) => {
     const query = { type: "and", nodes: [
       { type: "term", value: "宮崎" },
       { type: "not", node: { type: "term", value: "字幕" } },
@@ -111,17 +117,30 @@ test("search_ocr passes a nested boolean query to the repository", async () => {
     assert.equal(out.isError, undefined);
     assert.deepEqual(JSON.parse(out.text), { results: [{ id: 4, file_path: "Book A", file_name: "004.webp", reviewed: 0, snippet: "…宮崎監督…" }], returned: 1, offset: 0, limit: 20, nextAfterId: null });
     assert.deepEqual(receivedQuery, query);
-  });
+  }, {
+    search: async (options: { query: unknown }) => {
+      receivedQuery = options.query;
+      return { results: [{ id: 4, file_path: "Book A", file_name: "004.webp", reviewed: 0, snippet: "…宮崎監督…" }], returned: 1, offset: 0, limit: 20, nextAfterId: null };
+    },
+    searchJapanese: async () => { throw new Error("unused"); },
+    close: () => undefined,
+  } as unknown as OcrSearch);
 });
 
 test("search_ocr_literal is no longer advertised as a separate MCP tool", async () => {
   const config: AppConfig = { ...testConfig, auth: { mode: "none" } };
-  const server = startHttpServer(config, createMcpHttpHandler(createTestMcpRuntime({
-    search: () => ({ results: [], returned: 0, offset: 0, limit: 20, nextAfterId: null }),
+  const runtime = createTestMcpRuntime({
     getById: () => null,
     listLabels: () => [],
     getStats: () => ({ total: 0, reviewed: 0, unreviewed: 0, labels: 0 }),
-  } as unknown as OcrRepository), config));
+  } as unknown as OcrRepository, {
+    search: {
+      search: async () => ({ results: [], returned: 0, offset: 0, limit: 20, nextAfterId: null }),
+      searchJapanese: async () => { throw new Error("unused"); },
+      close: () => undefined,
+    } as unknown as OcrSearch,
+  });
+  const server = startHttpServer(config, createMcpHttpHandler(runtime, config));
   await once(server, "listening");
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
   try {
@@ -201,9 +220,14 @@ test("search_ocr rejects a limit above configured maxLimit through the registere
     search: { ...testConfig.search, maxLimit: 7 },
   };
   let searchCalls = 0;
-  const server = startHttpServer(config, createMcpHttpHandler(createTestMcpRuntime({
-    search: () => { searchCalls++; return []; },
-  } as unknown as OcrRepository), config));
+  const runtime = createTestMcpRuntime({} as OcrRepository, {
+    search: {
+      search: async () => { searchCalls++; return { results: [], returned: 0, offset: 0, limit: 7, nextAfterId: null }; },
+      searchJapanese: async () => { throw new Error("unused"); },
+      close: () => undefined,
+    } as unknown as OcrSearch,
+  });
+  const server = startHttpServer(config, createMcpHttpHandler(runtime, config));
   await once(server, "listening");
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
   try {
@@ -237,11 +261,19 @@ test("search_ocr_japanese is registered only when enabled and fails safely if it
       maxLimit: 20,
     },
   };
-  const server = startHttpServer(config, createMcpHttpHandler(createTestMcpRuntime({
-    search: () => [], getById: () => null, listLabels: () => [], getStats: () => ({ total: 0, reviewed: 0, unreviewed: 0, labels: 0 }),
+  const runtime = createTestMcpRuntime({
+    getById: () => null, listLabels: () => [], getStats: () => ({ total: 0, reviewed: 0, unreviewed: 0, labels: 0 }),
   } as unknown as OcrRepository, {
-    japaneseSearch: { unavailableReason: "extension and index were not installed" },
-  }), config));
+    search: {
+      repository: {
+        search: async () => ({ results: [], returned: 0, offset: 0, limit: 20, nextAfterId: null }),
+        searchJapanese: async () => { throw new Error("unused"); },
+        close: () => undefined,
+      } as unknown as OcrSearch,
+      japaneseUnavailableReason: "extension and index were not installed",
+    },
+  });
+  const server = startHttpServer(config, createMcpHttpHandler(runtime, config));
   await once(server, "listening");
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
   try {
