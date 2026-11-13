@@ -17,7 +17,7 @@
    ```
 
 2. `config/config.json` の `database.path`、`server.publicBaseUrl`、必要に応じて `server.allowedHosts` と `originalImages.rootPath` を実環境に合わせます。OAuth DB と静的トークン DB の保存先は、サーバー実行ユーザーがアクセスできるようにしてください。3つの DB パスは別々のファイルである必要があります。
-3. 依存関係をインストールし、ビルドとテストを実行します。
+3. 依存関係をインストールし、ビルドとテストを実行します。OCR-SEARCH は GitHub Release の tarball に固定されており、`.npmrc` の `allow-remote=root` は npm 12 の remote dependency 制限に対応する設定です。
 
    ```bash
    npm ci
