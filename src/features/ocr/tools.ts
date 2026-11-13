@@ -174,6 +174,7 @@ export function registerOcrTools(
   repo: OcrRepository,
   search: OcrSearch | undefined,
   searchUnavailableReason: string | undefined,
+  searchUnavailableMessage: string | undefined,
   options: OcrToolOptions,
   schemas: OcrToolSchemas
 ): void {
@@ -183,7 +184,7 @@ export function registerOcrTools(
     description: `Search OCR text with either a plain string or a nested AND/OR/NOT query. Each term is evaluated independently: 1–2 Unicode code points use exact, case-sensitive substring matching in OCR text; terms of 3+ code points use an exact phrase-style FTS5 trigram lookup. Structured queries support arbitrary nested {type:'and'|'or', nodes:[...]} and {type:'not', node:...} expressions, with up to ${MAX_QUERY_NODES} nodes and ${MAX_QUERY_DEPTH} levels. Each term may contain at most ${MAX_QUERY_TERM_CODE_POINTS} Unicode code points, and AND/OR nodes may have at most ${MAX_QUERY_CHILDREN} children. A query must contain at least one positive term; NOT-only queries are rejected. One- and two-character terms scan the OCR table and may be slower; terms are treated as literal values, never as raw SQL or FTS5 syntax. Optional label and reviewed filters apply to the whole expression. Results are in record-ID order and include a snippet and nextAfterId; pass nextAfterId as afterId for the next page. Use get_ocr_record for full OCR text.`,
     inputSchema: searchOcrInputSchema(schemas.searchOcr, options.maxLimit)
   }, async ({ query, label, reviewed, limit, offset, afterId }, ctx) => guarded("ocr/search_ocr", fallback, async () => {
-    if (!search) throw new ClientSafeError("OCR search is unavailable", { cause: new Error(searchUnavailableReason ?? "search was not initialized") });
+    if (!search) throw new ClientSafeError(searchUnavailableMessage ?? "OCR search is unavailable", { cause: new Error(searchUnavailableReason ?? "search was not initialized") });
     try {
       return textResult(await search.search({
         query, label, reviewed,
