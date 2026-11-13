@@ -21,7 +21,7 @@ test("non-search OCR reads provide stats, labels, and bounded records", () => {
   const record = repo.getById(1, 1000);
   assert.equal(record?.file_name, "020.webp");
   assert.equal(record?.ocr_text, "sample OCR text");
-  assert.equal(repo.getById(999, 1000), undefined);
+  assert.equal(repo.getById(999, 1000), null);
   repo.close();
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM source_images").get()?.count, 4,
     "repository close must not close the caller-owned DB");
