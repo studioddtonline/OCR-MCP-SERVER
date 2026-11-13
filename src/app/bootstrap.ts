@@ -190,7 +190,6 @@ export function bootstrap(config: AppConfig, options: BootstrapOptions = {}): Ru
     search,
     oauth,
     ocrWrite,
-    japaneseSearch,
     originalImages,
     originalImagesChecked,
     close() {
