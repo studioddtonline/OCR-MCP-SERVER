@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { OcrRepository } from "./repository.js";
-import { SearchQueryValidationError, type OcrSearch } from "ocr-search";
+import { SearchCancelledError, SearchQueryError, SearchQueryValidationError, SearchUnavailableError, type OcrSearch } from "ocr-search";
 import { ClientSafeError } from "../../shared/errors.js";
 import { guarded, textResult } from "../../shared/tool-result.js";
 import {
@@ -193,7 +193,7 @@ export function registerOcrTools(
         afterId,
       }, ctx.mcpReq.signal));
     } catch (error) {
-      if (error instanceof SearchQueryValidationError) throw new ClientSafeError(error.message);
+      if (error instanceof SearchQueryValidationError || error instanceof SearchUnavailableError || error instanceof SearchCancelledError || error instanceof SearchQueryError) throw new ClientSafeError(error.message);
       throw error;
     }
   }));
