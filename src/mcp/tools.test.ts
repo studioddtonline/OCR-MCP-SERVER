@@ -6,6 +6,7 @@ import { test } from "node:test";
 import type { AppConfig } from "../config/types.js";
 import type { OcrRepository } from "../features/ocr/repository.js";
 import type { OcrSearch } from "ocr-search";
+import type { McpRuntimeDependencies } from "./dependencies.js";
 import { ClientSafeError } from "../shared/errors.js";
 import { testConfig } from "../../test/support/oauth-kit.js";
 import { startHttpServer } from "../http/server.js";
@@ -22,11 +23,11 @@ const raw = () => { throw new Error(`SQLITE_IOERR: disk I/O error while reading 
 async function withRepo(
   repo: Partial<Record<keyof OcrRepository, unknown>>,
   run: (call: (name: string, args?: unknown) => Promise<{ isError?: boolean; text: string }>) => Promise<void>,
-  search?: OcrSearch,
+  search?: McpRuntimeDependencies["search"],
 ) {
   const config: AppConfig = { ...testConfig, auth: { mode: "none" } };
   const runtime = createTestMcpRuntime(repo as unknown as OcrRepository, {
-    search: search ? { repository: search } : undefined,
+    search,
   });
   const server = startHttpServer(config, createMcpHttpHandler(runtime, config));
   await once(server, "listening");
@@ -57,10 +58,12 @@ test("raw exceptions from the repository become a generic message; the local pat
       assert.ok(!out.text.includes("/secret") && !/SQLITE|I\/O/.test(out.text), `${tool}: ${out.text}`);
     }
   }, {
-    search: async () => raw(),
-    searchJapanese: async () => { throw new Error("unused"); },
-    close: () => undefined,
-  } as unknown as OcrSearch);
+    repository: {
+      search: async () => raw(),
+      searchJapanese: async () => { throw new Error("unused"); },
+      close: () => undefined,
+    } as unknown as OcrSearch,
+  });
 });
 
 test("ClientSafeError messages pass through unchanged", async () => {
@@ -118,13 +121,15 @@ test("search_ocr passes a nested boolean query to the repository", async () => {
     assert.deepEqual(JSON.parse(out.text), { results: [{ id: 4, file_path: "Book A", file_name: "004.webp", reviewed: 0, snippet: "…宮崎監督…" }], returned: 1, offset: 0, limit: 20, nextAfterId: null });
     assert.deepEqual(receivedQuery, query);
   }, {
-    search: async (options: { query: unknown }) => {
-      receivedQuery = options.query;
-      return { results: [{ id: 4, file_path: "Book A", file_name: "004.webp", reviewed: 0, snippet: "…宮崎監督…" }], returned: 1, offset: 0, limit: 20, nextAfterId: null };
-    },
-    searchJapanese: async () => { throw new Error("unused"); },
-    close: () => undefined,
-  } as unknown as OcrSearch);
+    repository: {
+      search: async (options: { query: unknown }) => {
+        receivedQuery = options.query;
+        return { results: [{ id: 4, file_path: "Book A", file_name: "004.webp", reviewed: 0, snippet: "…宮崎監督…" }], returned: 1, offset: 0, limit: 20, nextAfterId: null };
+      },
+      searchJapanese: async () => { throw new Error("unused"); },
+      close: () => undefined,
+    } as unknown as OcrSearch,
+  });
 });
 
 test("search_ocr_literal is no longer advertised as a separate MCP tool", async () => {
