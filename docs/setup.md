@@ -99,7 +99,7 @@ npm start
 - `npm run token -- ...`: ビルド済みのトークン管理 CLI。
 - `npm run token:dev -- ...`: 開発用トークン管理 CLI。
 
-Node.js の `node:sqlite` に関する ExperimentalWarning が出る場合があります。FTS5 非対応などで OCR DB を開けない場合は [トラブルシューティング](troubleshooting.md) を参照してください。
+`.npmrc` の `allow-remote=root` は、GitHub Release tarball を直接依存に使うための npm 12 remote dependency 設定です。Node.js の `node:sqlite` に関する ExperimentalWarning が出る場合があります。FTS5 非対応などで OCR DB を開けない場合は [トラブルシューティング](troubleshooting.md) を参照してください。
 
 ## 5. トークン発行
 
