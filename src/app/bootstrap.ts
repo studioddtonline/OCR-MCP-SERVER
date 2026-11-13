@@ -72,6 +72,7 @@ export function bootstrap(config: AppConfig, options: BootstrapOptions = {}): Ru
   const search: Runtime["search"] = {};
   if (!db) {
     search.unavailableReason = databaseUnavailableReason ?? "OCR database unavailable";
+    search.unavailableMessage = "OCR database is unavailable";
     if (config.japaneseSearch?.enabled) search.japaneseUnavailableReason = "OCR database unavailable";
   } else {
     const standard = {
@@ -102,6 +103,7 @@ export function bootstrap(config: AppConfig, options: BootstrapOptions = {}): Ru
           log("[startup] OCR-SEARCH standard search initialized");
         } catch (standardError) {
           search.unavailableReason = describeForLog(standardError);
+          search.unavailableMessage = "OCR search is unavailable";
           log("[startup] OCR-SEARCH unavailable:", search.unavailableReason);
         }
       }
@@ -111,6 +113,7 @@ export function bootstrap(config: AppConfig, options: BootstrapOptions = {}): Ru
         log("[startup] OCR-SEARCH standard search initialized");
       } catch (error) {
         search.unavailableReason = describeForLog(error);
+        search.unavailableMessage = "OCR search is unavailable";
         log("[startup] OCR-SEARCH unavailable:", search.unavailableReason);
       }
     }
