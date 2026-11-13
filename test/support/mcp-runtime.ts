@@ -14,7 +14,7 @@ export function createTestMcpRuntime(
   } = {},
 ): McpRuntimeDependencies {
   const legacySearch = (repo as unknown as { search?: (request: unknown) => unknown }).search;
-  const search = options.search ?? (legacySearch
+  const search: McpRuntimeDependencies["search"] = options.search ?? (legacySearch
     ? {
         repository: {
           search: async (request: unknown) => legacySearch(request),
