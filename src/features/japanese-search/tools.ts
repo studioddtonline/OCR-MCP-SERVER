@@ -44,7 +44,7 @@ export function registerJapaneseSearchTool(server: McpServer, options: JapaneseS
     "ocr/search_ocr_japanese",
     "Japanese search failed",
     async () => {
-      if (!options.repository) {
+      if (!options.repository || options.unavailableReason) {
         throw new ClientSafeError("Japanese search is unavailable.", {
           cause: new Error(options.unavailableReason ?? "Japanese search index was not initialized"),
         });
