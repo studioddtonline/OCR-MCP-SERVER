@@ -70,7 +70,9 @@ export class OcrRepository {
   }
 
   listLabels(limit = 100): Array<{ label: string; count: number }> {
-    return this.statement(OCR_SQL.listLabels).all(limit) as Array<{ label: string; count: number }>;
+    const rows = this.statement(OCR_SQL.listLabels).all(limit) as Array<{ label: string; count: number }>;
+    // node:sqlite returns null-prototype row objects; expose ordinary objects at the repository boundary.
+    return rows.map((row) => ({ label: row.label, count: row.count }));
   }
 
   getStats(): { total: number; reviewed: number; unreviewed: number; labels: number } {
