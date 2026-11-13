@@ -2,10 +2,10 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { ClientSafeError } from "../../shared/errors.js";
 import { guarded, textResult } from "../../shared/tool-result.js";
-import type { JapaneseSearchRepository } from "./repository.js";
+import { SearchQueryValidationError, type OcrSearch } from "ocr-search";
 
 export interface JapaneseSearchToolOptions {
-  repository?: JapaneseSearchRepository;
+  repository?: OcrSearch;
   unavailableReason?: string;
   maxLimit: number;
 }
@@ -49,14 +49,19 @@ export function registerJapaneseSearchTool(server: McpServer, options: JapaneseS
           cause: new Error(options.unavailableReason ?? "Japanese search index was not initialized"),
         });
       }
-      return textResult(await options.repository.search({
-        query,
-        mode: mode ?? "any",
-        label,
-        reviewed,
-        limit: limit ?? Math.min(20, options.maxLimit),
-        offset: offset ?? 0,
-      }, ctx.mcpReq.signal));
+      try {
+        return textResult(await options.repository.searchJapanese({
+          query,
+          mode: mode ?? "any",
+          label,
+          reviewed,
+          limit: limit ?? Math.min(20, options.maxLimit),
+          offset: offset ?? 0,
+        }, ctx.mcpReq.signal));
+      } catch (error) {
+        if (error instanceof SearchQueryValidationError) throw new ClientSafeError(error.message);
+        throw error;
+      }
     },
   ));
 }
