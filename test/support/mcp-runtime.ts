@@ -1,5 +1,4 @@
 import type { OcrRepository } from "../../src/features/ocr/repository.js";
-import type { OcrSearch } from "ocr-search";
 import { OriginalImageRepository } from "../../src/features/original-images/repository.js";
 import type { McpRuntimeDependencies } from "../../src/mcp/dependencies.js";
 
@@ -13,16 +12,7 @@ export function createTestMcpRuntime(
     japaneseSearch?: { unavailableReason?: string };
   } = {},
 ): McpRuntimeDependencies {
-  const legacySearch = (repo as unknown as { search?: (request: unknown) => unknown }).search;
-  const search: McpRuntimeDependencies["search"] = options.search ?? (legacySearch
-    ? {
-        repository: {
-          search: async (request: unknown) => legacySearch(request),
-          searchJapanese: async () => { throw new Error("Japanese search mock is unavailable"); },
-          close: () => undefined,
-        } as unknown as OcrSearch,
-      }
-    : {});
+  const search: McpRuntimeDependencies["search"] = options.search ?? {};
   return {
     repo,
     search: {
