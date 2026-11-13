@@ -14,9 +14,9 @@
     "token": "node --disable-warning=ExperimentalWarning dist/cli/tokens.js",
     "token:dev": "tsx --disable-warning=ExperimentalWarning src/cli/tokens.ts",
     "typecheck": "tsc -p tsconfig.json",
-    "japanese-search:install": "bash scripts/install-sqlite-vaporetto.sh",
-    "japanese-search:check": "node scripts/check-sqlite-vaporetto.mjs",
-    "japanese-search:index": "node scripts/build-japanese-search-index.mjs"
+    "japanese-search:install": "bash node_modules/ocr-search/scripts/install-sqlite-vaporetto.sh native/sqlite-vaporetto",
+    "japanese-search:check": "node node_modules/ocr-search/scripts/check-sqlite-vaporetto.mjs --extension=native/sqlite-vaporetto/libsqlite_vaporetto.so",
+    "japanese-search:index": "node node_modules/ocr-search/scripts/build-japanese-index.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/node": "^2.1.1",
