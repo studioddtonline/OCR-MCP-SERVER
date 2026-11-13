@@ -140,10 +140,12 @@ test("search_ocr_literal is no longer advertised as a separate MCP tool", async 
     getStats: () => ({ total: 0, reviewed: 0, unreviewed: 0, labels: 0 }),
   } as unknown as OcrRepository, {
     search: {
-      search: async () => ({ results: [], returned: 0, offset: 0, limit: 20, nextAfterId: null }),
-      searchJapanese: async () => { throw new Error("unused"); },
-      close: () => undefined,
-    } as unknown as OcrSearch,
+      repository: {
+        search: async () => ({ results: [], returned: 0, offset: 0, limit: 20, nextAfterId: null }),
+        searchJapanese: async () => { throw new Error("unused"); },
+        close: () => undefined,
+      } as unknown as OcrSearch,
+    },
   });
   const server = startHttpServer(config, createMcpHttpHandler(runtime, config));
   await once(server, "listening");
@@ -227,10 +229,12 @@ test("search_ocr rejects a limit above configured maxLimit through the registere
   let searchCalls = 0;
   const runtime = createTestMcpRuntime({} as OcrRepository, {
     search: {
-      search: async () => { searchCalls++; return { results: [], returned: 0, offset: 0, limit: 7, nextAfterId: null }; },
-      searchJapanese: async () => { throw new Error("unused"); },
-      close: () => undefined,
-    } as unknown as OcrSearch,
+      repository: {
+        search: async () => { searchCalls++; return { results: [], returned: 0, offset: 0, limit: 7, nextAfterId: null }; },
+        searchJapanese: async () => { throw new Error("unused"); },
+        close: () => undefined,
+      } as unknown as OcrSearch,
+    },
   });
   const server = startHttpServer(config, createMcpHttpHandler(runtime, config));
   await once(server, "listening");
