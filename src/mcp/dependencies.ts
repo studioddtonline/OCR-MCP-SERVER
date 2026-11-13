@@ -6,7 +6,7 @@ import type { OriginalImageRepository } from "../features/original-images/reposi
 /** Runtime-owned resources needed to create a fresh MCP server for each HTTP request. */
 export interface McpRuntimeDependencies {
   repo: OcrRepository;
-  search: { repository?: OcrSearch; unavailableReason?: string; japaneseUnavailableReason?: string };
+  search: { repository?: OcrSearch; unavailableReason?: string; unavailableMessage?: string; japaneseUnavailableReason?: string };
   ocrWrite: Pick<OcrWriteToolsOptions, "repository" | "unavailableReason" | "log">;
   originalImages: OriginalImageRepository;
 }
