@@ -25,7 +25,7 @@ export function createMcpServer(
 ): McpServer {
   const server = new McpServer({ name: "ocr-mcp-server", version: "0.1.0" });
 
-  registerOcrTools(server, runtime.repo, runtime.search.repository, runtime.search.unavailableReason, {
+  registerOcrTools(server, runtime.repo, runtime.search.repository, runtime.search.unavailableReason, runtime.search.unavailableMessage, {
     defaultLimit: config.search.defaultLimit,
     maxLimit: config.search.maxLimit,
     snippetLength: config.search.snippetLength,
