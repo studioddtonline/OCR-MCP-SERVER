@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { ClientSafeError } from "../../shared/errors.js";
 import { guarded, textResult } from "../../shared/tool-result.js";
-import { SearchQueryValidationError, type OcrSearch } from "ocr-search";
+import { SearchCancelledError, SearchQueryError, SearchQueryValidationError, SearchUnavailableError, SearchWorkerError, type OcrSearch } from "ocr-search";
 
 export interface JapaneseSearchToolOptions {
   repository?: OcrSearch;
@@ -59,7 +59,7 @@ export function registerJapaneseSearchTool(server: McpServer, options: JapaneseS
           offset: offset ?? 0,
         }, ctx.mcpReq.signal));
       } catch (error) {
-        if (error instanceof SearchQueryValidationError) throw new ClientSafeError(error.message);
+        if (error instanceof SearchQueryValidationError || error instanceof SearchUnavailableError || error instanceof SearchCancelledError || error instanceof SearchQueryError || error instanceof SearchWorkerError) throw new ClientSafeError(error.message);
         throw error;
       }
     },
