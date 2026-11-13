@@ -1,81 +1,83 @@
-# Japanese full-text search with sqlite-vaporetto
+# 日本語全文検索
 
-This optional feature adds one MCP tool, `search_ocr_japanese`, backed by a separate FTS5 index. Vaporetto segments Japanese text into tokens during the offline index build and when tokenizing query text. The index itself uses FTS5's built-in `unicode61` tokenizer over strings whose Vaporetto word boundaries have already been made explicit. This avoids loading a second copy of the large Vaporetto model in the serving worker. It does not change the existing `images_fts` table or write to the shared OCR database.
+日本語全文検索の実装は [OCR-SEARCH](https://github.com/studioddtonline/OCR-SEARCH) が所有します。MCP サーバー側は `search_ocr_japanese` ツール、設定、認証境界だけを担当し、トークナイザー、専用 FTS5 インデックス、Worker、検索ロジックを重複実装しません。
 
-The project ships installation/build scripts, not the upstream native binary. The installer is pinned to upstream release `v0.4.0` and verifies the archive's published SHA-256 before extracting it. The selected `-with-model` release embeds `bccwj-suw+unidic_pos+kana.model.zst`; no separate model file is required. Check the upstream release notes before changing the pinned version.
+## 1. ネイティブ拡張の導入
 
-## 1. Install the extension (Xubuntu / Linux)
-
-From the project root:
+OCR-MCP-SERVER のプロジェクトルートで実行します。
 
 ```bash
+npm ci
 npm run japanese-search:install
 npm run japanese-search:check
 ```
 
-The installer currently supports Linux `x86_64` and `aarch64`. It places the extension at:
+インストーラーは upstream の sqlite-vaporetto v0.4.0 を SHA-256 検証して導入します。Linux x86_64 / aarch64 に対応します。標準の導入先は次のとおりです。
 
 ```text
 native/sqlite-vaporetto/libsqlite_vaporetto.so
 ```
 
-For another operating system or architecture, obtain the matching official release asset or build from the upstream repository. Do not load a native library from an untrusted source.
+モデル同梱版を利用するため、別途 Vaporetto モデルファイルを指定する必要はありません。ネイティブ拡張とモデルのライセンス通知は、導入先に保持してください。
 
-## 2. Configure the feature
+## 2. 設定
 
-Add the following section to `config/config.json`. Keep all paths absolute and make sure `indexPath` is different from the source OCR DB, OAuth DB, and static-token DB.
+`config/config.json` に以下を設定します。パスは絶対パスで指定してください。
 
 ```json
 "japaneseSearch": {
   "enabled": true,
-  "indexPath": "/home/USER/src/ocr-mcp-server/data/ocr-japanese-search.sqlite",
-  "extensionPath": "/home/USER/src/ocr-mcp-server/native/sqlite-vaporetto/libsqlite_vaporetto.so",
+  "indexPath": "/absolute/path/ocr-japanese-search.sqlite",
+  "extensionPath": "/absolute/path/ocr-mcp-server/native/sqlite-vaporetto/libsqlite_vaporetto.so",
   "busyTimeoutMs": 500,
   "maxLimit": 20
 }
 ```
 
-Replace `/home/USER/src/ocr-mcp-server` with the real project path. `enabled` defaults to `false`; existing configurations remain read-only and do not register the new tool until explicitly enabled.
+`indexPath` は OCR DB、OAuth DB、静的トークン DB と別ファイルにします。`enabled` は既定で `false` です。
 
-## 3. Build the dedicated index
+## 3. 専用インデックスの構築
 
-```bash
-npm run japanese-search:index
-```
-
-The command reads the source DB path and Japanese-search settings from `MCP_CONFIG_PATH`, if set, or `config/config.json` otherwise. It opens the source OCR database read-only, copies `source_images` to a staging SQLite database, tokenizes each OCR text with the Vaporetto scalar helper, and inserts those terms into a contentless FTS5 table using `unicode61`. Original OCR text is stored once in `japanese_documents` for display/snippets; the FTS table stores only its search index. The source database remains authoritative.
-
-The index build is an offline maintenance command. It may take time and use CPU for a large OCR collection, and prints progress every 1,000 records. The source reader holds a consistent read snapshot while copying; with rollback-journal mode, that snapshot may delay concurrent source writes, so run the initial build/rebuild when `book-ocr` is not doing a large write. The original OCR database is never modified by this command. The generated index uses schema version 2; an older schema-v1 index must be rebuilt after applying this version.
-
-## 4. Restart the MCP server
-
-After the index is built, restart the server. When `japaneseSearch.enabled` is true, the MCP server exposes `search_ocr_japanese`. The main thread checks that the configured files are readable and launches one dedicated worker. The worker loads the native extension, warms the Vaporetto query-side tokenizer once, validates the unicode61 FTS5 index, and then signals readiness asynchronously. This avoids loading the large model for both the FTS5 table tokenizer and the query helper. The log entry `[japanese-search] worker ready` includes the overall `initializationMs`. Worker initialization fails closed after a 180-second startup deadline. Search calls are dispatched one at a time in FIFO order; up to four total active/queued calls are accepted and additional calls receive a safe busy error. Each request has a 180-second queue-wait deadline measured from enqueue until dispatch. The 20-second execution deadline starts only after the worker reports that a query has started, so time spent waiting behind another query is excluded. If a worker fails, the active call fails; it is replaced only when queued demand remains. Automatic restarts use exponential backoff (250 ms base, capped at 8 seconds) and are limited to five consecutive startup failures before the worker reaches `ready`. Reaching `ready` resets the startup-failure counter. Query execution timeouts and failures after `ready` do not consume this budget; recovery still occurs only when queued demand remains. When the worker is idle, an unexpected failure does not trigger background restarts; the next request starts recovery. `startup-error`, the startup deadline, and exhausted restart attempts fail closed instead of restarting indefinitely; after the restart limit, restart the MCP server.
-
-## 5. Tool inputs
-
-- `query` (required): Japanese word or phrase, 1–500 characters.
-- `mode`: `any` (default) or `all`. `any` ORs searchable Vaporetto tokens for broader recall; `all` requires every searchable token.
-- `label`: optional exact `source_images.file_path` label.
-- `reviewed`: optional review-state filter.
-- `limit`: 1 to the configured `maxLimit` (default 20).
-- `offset`: relevance-ranked pagination offset, capped at 100,000. Keep offsets small where possible.
-
-The result includes the query's searchable tokens, snippets taken from original OCR text with best-effort match highlighting, source record IDs, labels, file names, review states, BM25 scores, and `nextOffset` when another page exists. BM25 scores are lower for better matches. Since snippets are generated from original text after the match, highlighting is substring-based and may be approximate where a query token occurs inside a longer OCR word.
-
-**Important search semantics:** sqlite-vaporetto is a Japanese word tokenizer, not a character-substring index. A one-character query to `search_ocr_japanese` is tokenized by Vaporetto and is not guaranteed to find that character inside every longer token. Use the unified `search_ocr` tool when exact short-substring matching is required: each 1–2 Unicode-code-point term scans `source_images.ocr_text` with case-sensitive literal substring semantics, while terms of 3+ code points use the existing FTS5 trigram phrase index. Structured `search_ocr` expressions can combine these term types with nested AND/OR/NOT conditions. The one- and two-character path scans the source OCR table and can cost more than indexed searches; it does not depend on the Japanese snapshot index and does not apply Unicode normalization.
-
-## 6. Index freshness and rebuilding
-
-The Japanese index is a snapshot. It is not automatically updated when `book-ocr` changes `source_images` or when `update_ocr_text` changes a source record. Rebuild the index after adding OCR records, changing OCR text, changing review state, or applying schema-v2 pretokenization changes:
+OCR-SEARCH の Builder を呼び出します。MCP サーバーは設定ファイルを Builder に読ませず、すべてのパスを明示します。
 
 ```bash
-npm run japanese-search:index
+npm run japanese-search:index -- \
+  --database=/absolute/path/ocr.sqlite \
+  --index=/absolute/path/ocr-japanese-search.sqlite \
+  --extension=/absolute/path/ocr-mcp-server/native/sqlite-vaporetto/libsqlite_vaporetto.so \
+  --busy-timeout-ms=500
 ```
 
-Then restart the MCP server so the worker opens the new snapshot. The previous index remains in place if the build fails. Keep sufficient disk space for the staging index alongside the previous index during rebuilding.
+Builder は元の OCR DB を読み取り専用で開き、一貫した読み取りスナップショットから専用 SQLite DB をステージングファイルへ構築します。Vaporetto で分かち書きした語を FTS5 unicode61 インデックスへ格納し、OCR 本文と表示用メタデータも専用 DB に保持します。元の OCR DB や `images_fts` は変更しません。
 
-## 7. License and security notes
+構築中は CPU とディスクを使用します。ロールバックジャーナルモードでは読み取りスナップショットが元 DB への書き込みを遅らせる場合があるため、初回構築や再構築は OCR の大量書き込みがない時間帯に行ってください。Builder はステージング DB の検証後に置き換えるため、構築失敗時は既存インデックスを維持します。
 
-The upstream extension is licensed `MIT OR Apache-2.0`. The `-with-model` release also bundles a model licensed under `BSD-3-Clause`; keep upstream license notices with the installed package. Source references: [sqlite-vaporetto README and releases](https://github.com/hotchpotch/sqlite-vaporetto).
+## 4. MCP サーバーの再起動
 
-The server loads the extension only from the configured absolute path. The worker validates the index during asynchronous startup, then disables extension loading on its SQLite connection immediately after loading the trusted library. The Japanese index is opened read-only by the MCP server; only the maintenance script creates or replaces this index snapshot.
+インデックス構築後に MCP サーバーを再起動します。`japaneseSearch.enabled` が `true` の場合に `search_ocr_japanese` が登録されます。
+
+OCR-SEARCH が専用 Worker でネイティブ拡張と Vaporetto を初期化します。モデル初期化は数秒以上かかる場合があります。Worker は FIFO で検索を処理し、起動・キュー待機・実行にそれぞれ上限を設けています。Worker の起動や検索に失敗した場合、日本語検索は安全側に失敗します。日本語インデックスが利用不能でも、標準検索は利用可能なままです。
+
+## 5. 検索仕様と鮮度
+
+- `mode=any` は検索語から得たトークンのいずれかに一致、`mode=all` はすべてに一致します。
+- `label` と `reviewed` のフィルターは検索時点の OCR DB の値に適用します。
+- 結果の OCR 本文、ラベル、ファイル名、レビュー状態も現在の OCR DB から取得します。
+- 候補 ID と BM25 順位は専用インデックスのスナップショットに基づきます。
+- OCR レコードの追加や本文変更は自動でインデックスへ反映されません。新規レコードや変更後の本文を検索対象にするには再構築が必要です。
+- インデックスを置き換えた後は MCP サーバーを再起動してください。実行中の Worker は既存の SQLite 接続を保持します。
+
+日本語検索は文字単位の部分一致ではなく、Vaporetto による形態素・単語トークン検索です。1〜2文字の任意部分文字列検索が必要な場合は `search_ocr` を使用してください。標準検索と日本語検索は検索方式、ランキング、ページング仕様が異なります。
+
+## 6. 再構築
+
+OCR レコードの追加、OCR 本文の変更、レビュー状態の変更、または元 DB スキーマの変更後に再構築します。
+
+```bash
+npm run japanese-search:index -- \
+  --database=/absolute/path/ocr.sqlite \
+  --index=/absolute/path/ocr-japanese-search.sqlite \
+  --extension=/absolute/path/ocr-mcp-server/native/sqlite-vaporetto/libsqlite_vaporetto.so
+```
+
+再構築後は MCP サーバーを再起動します。詳細な Worker ライフサイクル、検索入力、スナップショットの制約は [OCR-SEARCH の日本語検索ドキュメント](https://github.com/studioddtonline/OCR-SEARCH/blob/main/docs/japanese-search.md) を参照してください。
