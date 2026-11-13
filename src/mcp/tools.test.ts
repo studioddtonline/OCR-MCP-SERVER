@@ -311,10 +311,10 @@ test("search_ocr_japanese delegates to the OCR-SEARCH Japanese API", async () =>
         params: { name: "search_ocr_japanese", arguments: { query: "東京", mode: "all", limit: 5, offset: 2 } },
       }),
     });
-    const data = (await response.text()).split("\\n").find((line) => line.startsWith("data: "))!;
+    const data = (await response.text()).split("\n").find((line) => line.startsWith("data: "))!;
     const result = (JSON.parse(data.slice(6)) as { result: { isError?: boolean; content: Array<{ text?: string }> } }).result;
     assert.equal(result.isError, undefined);
-    assert.deepEqual(JSON.parse(result.content.map((part) => part.text ?? "").join("\\n")), expected);
+    assert.deepEqual(JSON.parse(result.content.map((part) => part.text ?? "").join("\n")), expected);
     assert.deepEqual(received, { query: "東京", mode: "all", label: undefined, reviewed: undefined, limit: 5, offset: 2 });
   } finally {
     server.closeAllConnections();
