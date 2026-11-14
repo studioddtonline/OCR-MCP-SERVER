@@ -6,6 +6,7 @@
 
 - Node.js **22.16.0 以降**。OCR 検索は SQLite FTS5 を必要とします。Node.js の `node:sqlite` はそれ以前でも存在する場合がありますが、FTS5 が利用できなければ OCR DB は使用不可になります。
 - npm と、このリポジトリの `package-lock.json`。
+- OCR-SEARCH v0.1.0。GitHub Release の tarball を直接依存に固定しています。npm 12 では `.npmrc` の `allow-remote=root` が remote dependency の許可に使われます。
 - 既存 OCR SQLite DB。通常は読み取り専用で開きます。OCR 書き込み機能を明示的に有効化すると、同じ DB に書き込み用の別接続を開きます。
 - 画像ツールを使う場合は、元画像を格納したディレクトリへのアクセス。
 
@@ -99,7 +100,7 @@ npm start
 - `npm run token -- ...`: ビルド済みのトークン管理 CLI。
 - `npm run token:dev -- ...`: 開発用トークン管理 CLI。
 
-Node.js の `node:sqlite` に関する ExperimentalWarning が出る場合があります。FTS5 非対応などで OCR DB を開けない場合は [トラブルシューティング](troubleshooting.md) を参照してください。
+`.npmrc` の `allow-remote=root` は、GitHub Release tarball を直接依存に使うための npm 12 remote dependency 設定です。Node.js の `node:sqlite` に関する ExperimentalWarning が出る場合があります。FTS5 非対応などで OCR DB を開けない場合は [トラブルシューティング](troubleshooting.md) を参照してください。
 
 ## 5. トークン発行
 

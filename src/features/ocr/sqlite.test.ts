@@ -31,7 +31,8 @@ test("a complete schema passes, and the tools then actually work against it", ()
     try {
       const repo = new OcrRepository(db);
       assert.equal(repo.getStats().total, 1);
-      assert.equal(repo.search({ query: "sample", limit: 5, offset: 0, snippetLength: 80 }).returned, 1);
+      assert.equal(repo.getById(1, 1000)?.ocr_text, "sample OCR one");
+      assert.deepEqual(repo.listLabels(), [{ label: "Book A", count: 1 }]);
     } finally { db.close(); }
   });
 });

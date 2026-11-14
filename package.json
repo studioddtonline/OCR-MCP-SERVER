@@ -14,15 +14,16 @@
     "token": "node --disable-warning=ExperimentalWarning dist/cli/tokens.js",
     "token:dev": "tsx --disable-warning=ExperimentalWarning src/cli/tokens.ts",
     "typecheck": "tsc -p tsconfig.json",
-    "japanese-search:install": "bash scripts/install-sqlite-vaporetto.sh",
-    "japanese-search:check": "node scripts/check-sqlite-vaporetto.mjs",
-    "japanese-search:index": "node scripts/build-japanese-search-index.mjs"
+    "japanese-search:install": "bash node_modules/ocr-search/scripts/install-sqlite-vaporetto.sh native/sqlite-vaporetto",
+    "japanese-search:check": "node node_modules/ocr-search/scripts/check-sqlite-vaporetto.mjs --extension=native/sqlite-vaporetto/libsqlite_vaporetto.so",
+    "japanese-search:index": "node node_modules/ocr-search/scripts/build-japanese-index.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/node": "^2.1.1",
     "@modelcontextprotocol/server": "^2.1.1",
     "dotenv": "^16.4.7",
-    "zod": "^4.0.0"
+    "zod": "^4.0.0",
+    "ocr-search": "https://github.com/studioddtonline/OCR-SEARCH/releases/download/v0.2.0/ocr-search-0.2.0.tgz"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

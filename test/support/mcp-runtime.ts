@@ -7,13 +7,19 @@ export function createTestMcpRuntime(
   repo: OcrRepository,
   options: {
     ocrWrite?: McpRuntimeDependencies["ocrWrite"];
-    japaneseSearch?: McpRuntimeDependencies["japaneseSearch"];
+    search?: McpRuntimeDependencies["search"];
+    /** Compatibility helper for tests that model an unavailable Japanese index. */
+    japaneseSearch?: { unavailableReason?: string };
   } = {},
 ): McpRuntimeDependencies {
+  const search: McpRuntimeDependencies["search"] = options.search ?? {};
   return {
     repo,
+    search: {
+      ...search,
+      japaneseUnavailableReason: search.japaneseUnavailableReason ?? options.japaneseSearch?.unavailableReason,
+    },
     ocrWrite: options.ocrWrite ?? {},
-    japaneseSearch: options.japaneseSearch ?? {},
     originalImages: new OriginalImageRepository(undefined),
   };
 }

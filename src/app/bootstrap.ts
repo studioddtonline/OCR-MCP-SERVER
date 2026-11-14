@@ -3,7 +3,7 @@ import { DEFAULT_JAPANESE_SEARCH_BUSY_TIMEOUT_MS, DEFAULT_JAPANESE_SEARCH_MAX_LI
 import { openReadOnlyDatabase } from "../features/ocr/sqlite.js";
 import { OcrRepository } from "../features/ocr/repository.js";
 import { OcrWriteRepository, OCR_WRITE_BUSY_TIMEOUT_MS } from "../features/ocr/write-repository.js";
-import { JapaneseSearchRepository } from "../features/japanese-search/repository.js";
+import { createOcrSearch } from "ocr-search";
 import { OriginalImageRepository } from "../features/original-images/repository.js";
 import { OAuthStore } from "../auth/oauth-store.js";
 import { TokenStore } from "../auth/token-store.js";
@@ -29,8 +29,6 @@ export interface BootstrapOptions {
   openDatabase?: typeof openReadOnlyDatabase;
   /** Override the writable OCR repository opener for degraded-start tests. */
   openWriteRepository?: typeof OcrWriteRepository.open;
-  /** Override the Japanese index opener for startup-path tests. */
-  openJapaneseSearchRepository?: typeof JapaneseSearchRepository.open;
 }
 
 /** Make the common missing-FTS5 failure actionable without changing degraded-start behavior. */
@@ -58,15 +56,67 @@ export function bootstrap(config: AppConfig, options: BootstrapOptions = {}): Ru
 
   let db: ReturnType<typeof openReadOnlyDatabase> | undefined;
   let repo: OcrRepository;
+  let databaseUnavailableReason: string | undefined;
   try {
     db = openDatabase({ path: config.database.path, busyTimeoutMs: config.database.busyTimeoutMs });
     repo = new OcrRepository(db);
     log("[startup] OCR database opened and schema validated");
   } catch (error) {
     const reason = describeOcrDatabaseFailure(error);
+    databaseUnavailableReason = reason;
     // ドライバのエラーはパスを含まない場合がある (例: "disk I/O error") ため、失敗した設定パスを運用者向けログに明記する。
     log(`[startup] OCR database unavailable (database.path=${config.database.path}); server will start and OCR tools will return runtime errors:`, reason);
     repo = new OcrRepository(undefined, reason);
+  }
+
+  const search: Runtime["search"] = {};
+  if (!db) {
+    search.unavailableReason = databaseUnavailableReason ?? "OCR database unavailable";
+    search.unavailableMessage = "OCR database is unavailable";
+    if (config.japaneseSearch?.enabled) search.japaneseUnavailableReason = "OCR database unavailable";
+  } else {
+    const standard = {
+      defaultLimit: config.search.defaultLimit,
+      maxLimit: config.search.maxLimit,
+      snippetLength: config.search.snippetLength,
+    };
+    if (config.japaneseSearch?.enabled) {
+      try {
+        const settings = config.japaneseSearch;
+        search.repository = createOcrSearch({
+          database: db,
+          standard,
+          japanese: {
+            indexPath: requiredPath(settings.indexPath, "japaneseSearch.indexPath"),
+            extensionPath: requiredPath(settings.extensionPath, "japaneseSearch.extensionPath"),
+            busyTimeoutMs: settings.busyTimeoutMs ?? DEFAULT_JAPANESE_SEARCH_BUSY_TIMEOUT_MS,
+            maxLimit: settings.maxLimit ?? DEFAULT_JAPANESE_SEARCH_MAX_LIMIT,
+            log,
+          },
+        });
+        log("[startup] OCR-SEARCH initialized; Japanese search worker launched");
+      } catch (error) {
+        search.japaneseUnavailableReason = describeForLog(error);
+        log("[startup] Japanese search unavailable; standard OCR search will remain available:", search.japaneseUnavailableReason);
+        try {
+          search.repository = createOcrSearch({ database: db, standard });
+          log("[startup] OCR-SEARCH standard search initialized");
+        } catch (standardError) {
+          search.unavailableReason = describeForLog(standardError);
+          search.unavailableMessage = "OCR search is unavailable";
+          log("[startup] OCR-SEARCH unavailable:", search.unavailableReason);
+        }
+      }
+    } else {
+      try {
+        search.repository = createOcrSearch({ database: db, standard });
+        log("[startup] OCR-SEARCH standard search initialized");
+      } catch (error) {
+        search.unavailableReason = describeForLog(error);
+        search.unavailableMessage = "OCR search is unavailable";
+        log("[startup] OCR-SEARCH unavailable:", search.unavailableReason);
+      }
+    }
   }
 
   const ocrWrite: Runtime["ocrWrite"] = { enabled: config.ocrWrite?.enabled ?? false };
@@ -81,25 +131,6 @@ export function bootstrap(config: AppConfig, options: BootstrapOptions = {}): Ru
     } catch (error) {
       ocrWrite.unavailableReason = describeForLog(error);
       log(`[startup] OCR write repository unavailable (database.path=${config.database.path}); read-only tools will remain available and update_ocr_text will return write_unavailable:`, ocrWrite.unavailableReason);
-    }
-  }
-
-  const japaneseSearch: Runtime["japaneseSearch"] = { enabled: config.japaneseSearch?.enabled ?? false };
-  if (japaneseSearch.enabled) {
-    const openJapaneseSearchRepository = options.openJapaneseSearchRepository ?? JapaneseSearchRepository.open;
-    try {
-      const settings = config.japaneseSearch;
-      japaneseSearch.repository = openJapaneseSearchRepository({
-        indexPath: requiredPath(settings?.indexPath, "japaneseSearch.indexPath"),
-        extensionPath: requiredPath(settings?.extensionPath, "japaneseSearch.extensionPath"),
-        busyTimeoutMs: settings?.busyTimeoutMs ?? DEFAULT_JAPANESE_SEARCH_BUSY_TIMEOUT_MS,
-        maxLimit: settings?.maxLimit ?? DEFAULT_JAPANESE_SEARCH_MAX_LIMIT,
-        log,
-      });
-      log("[startup] Japanese sqlite-vaporetto worker launched; index validation is running asynchronously");
-    } catch (error) {
-      japaneseSearch.unavailableReason = describeForLog(error);
-      log(`[startup] Japanese search unavailable (japaneseSearch.indexPath=${config.japaneseSearch?.indexPath ?? "not configured"}); the Japanese search tool will return a fixed error:`, japaneseSearch.unavailableReason);
     }
   }
 
@@ -156,14 +187,14 @@ export function bootstrap(config: AppConfig, options: BootstrapOptions = {}): Ru
 
   return {
     repo,
+    search,
     oauth,
     ocrWrite,
-    japaneseSearch,
     originalImages,
     originalImagesChecked,
     close() {
       if (cleanupTimer) clearInterval(cleanupTimer);
-      for (const closeStore of [() => originalImages.close(), () => db?.close(), () => ocrWrite.repository?.close(), () => japaneseSearch.repository?.close(), () => oauthStore?.close(), () => tokenStore?.close()]) {
+      for (const closeStore of [() => originalImages.close(), () => search.repository?.close(), () => repo.close(), () => db?.close(), () => ocrWrite.repository?.close(), () => oauthStore?.close(), () => tokenStore?.close()]) {
         try { closeStore(); } catch (error) { logError("[shutdown] failed to close a database:", describeForLog(error)); }
       }
     },

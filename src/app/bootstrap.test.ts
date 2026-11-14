@@ -126,7 +126,15 @@ test("healthy start (auth none): OCR DB opens, no OAuth stores, unconfigured ima
     await runtime.originalImagesChecked;
     assert.equal(runtime.oauth, undefined);
     assert.ok(env.logs.some((l) => l.includes("OCR database opened")));
+    assert.ok(env.logs.some((l) => l.includes("OCR-SEARCH standard search initialized")));
+    const searchEngine = runtime.search.repository;
+    assert.ok(searchEngine, "the shared search engine is initialized");
+    const directSearch = await searchEngine.search({ query: "sample" });
+    assert.deepEqual(directSearch.results.map((row) => row.id), [1, 2]);
     assert.ok(env.logs.some((l) => l.includes("original image storage unavailable") && l.includes("not configured")));
+    const mcpSearch = await toolResult(await callTool(base, "search_ocr", { query: "sample" }));
+    assert.equal(mcpSearch.isError, undefined);
+    assert.deepEqual(JSON.parse(mcpSearch.text).results.map((row: { id: number }) => row.id), [1, 2]);
     const stats = await toolResult(await callTool(base, "get_ocr_stats"));
     assert.equal(stats.isError, undefined);
     assert.match(stats.text, /"total":\s*2/);
