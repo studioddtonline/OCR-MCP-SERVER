@@ -23,7 +23,7 @@
     "@modelcontextprotocol/server": "^2.1.1",
     "dotenv": "^16.4.7",
     "zod": "^4.0.0",
-    "ocr-search": "https://github.com/studioddtonline/OCR-SEARCH/releases/download/v0.1.0/ocr-search-0.1.0.tgz"
+    "ocr-search": "https://github.com/studioddtonline/OCR-SEARCH/releases/download/v0.2.0/ocr-search-0.2.0.tgz"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
