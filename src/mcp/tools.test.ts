@@ -400,10 +400,10 @@ test("OCR-SEARCH base errors are mapped to client-safe messages for standard and
         headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
         body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }),
       });
-      const data = (await response.text()).split("\\n").find((line) => line.startsWith("data: "))!;
+      const data = (await response.text()).split("\n").find((line) => line.startsWith("data: "))!;
       const result = (JSON.parse(data.slice(6)) as { result: { isError?: boolean; content: Array<{ text?: string }> } }).result;
       assert.equal(result.isError, true, name);
-      assert.deepEqual(JSON.parse(result.content.map((part) => part.text ?? "").join("\\n")), { error: expectedMessage }, name);
+      assert.deepEqual(JSON.parse(result.content.map((part) => part.text ?? "").join("\n")), { error: expectedMessage }, name);
     }
   } finally {
     server.closeAllConnections();
@@ -449,6 +449,17 @@ test("Japanese MCP query limit counts Unicode code points rather than UTF-16 cod
   await once(server, "listening");
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
   try {
+    const listResponse = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "tools/list" }),
+    });
+    const listData = (await listResponse.text()).split("\\n").find((line) => line.startsWith("data: "))!;
+    const listedTools = (JSON.parse(listData.slice(6)) as { result: { tools: Array<{ name: string; inputSchema: { properties: Record<string, { maxLength?: number }> } }> } }).result.tools;
+    const japaneseTool = listedTools.find((tool) => tool.name === "search_ocr_japanese");
+    assert.ok(japaneseTool, "Japanese search tool must be registered");
+    assert.equal(japaneseTool.inputSchema.properties.query.maxLength, 500, "the advertised schema must use the Unicode code-point limit");
+
     const validResponse = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
@@ -457,7 +468,7 @@ test("Japanese MCP query limit counts Unicode code points rather than UTF-16 cod
         params: { name: "search_ocr_japanese", arguments: { query: acceptedQuery } },
       }),
     });
-    const validData = (await validResponse.text()).split("\\n").find((line) => line.startsWith("data: "))!;
+    const validData = (await validResponse.text()).split("\n").find((line) => line.startsWith("data: "))!;
     const validResult = (JSON.parse(validData.slice(6)) as { result: { isError?: boolean } }).result;
     assert.equal(validResult.isError, undefined);
     assert.equal(receivedQuery, acceptedQuery);
