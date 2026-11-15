@@ -458,7 +458,9 @@ test("Japanese MCP query limit counts Unicode code points rather than UTF-16 cod
     const listedTools = (JSON.parse(listData.slice(6)) as { result: { tools: Array<{ name: string; inputSchema: { properties: Record<string, { maxLength?: number }> } }> } }).result.tools;
     const japaneseTool = listedTools.find((tool) => tool.name === "search_ocr_japanese");
     assert.ok(japaneseTool, "Japanese search tool must be registered");
-    assert.equal(japaneseTool.inputSchema.properties.query.maxLength, 500, "the advertised schema must use the Unicode code-point limit");
+    const querySchema = japaneseTool.inputSchema.properties.query;
+    assert.ok(querySchema, "the Japanese query property must be advertised");
+    assert.equal(querySchema.maxLength, 500, "the advertised schema must use the Unicode code-point limit");
 
     const validResponse = await fetch(url, {
       method: "POST",
