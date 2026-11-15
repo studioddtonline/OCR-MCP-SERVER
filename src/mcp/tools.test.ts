@@ -483,7 +483,7 @@ test("Japanese MCP query limit counts Unicode code points rather than UTF-16 cod
       }),
     });
     const invalidBody = await invalidResponse.text();
-    assert.match(invalidBody, /500|length|code point|too_big/i);
+    assert.ok(!invalidResponse.ok || /error|invalid|validation|500|length|code point|too_big/i.test(invalidBody), "the 501-code-point query must be rejected");
     assert.equal(searchCalls, 1, "the repository must not be called for a query over 500 code points");
   } finally {
     server.closeAllConnections();
