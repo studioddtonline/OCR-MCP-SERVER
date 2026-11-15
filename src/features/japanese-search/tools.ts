@@ -12,7 +12,7 @@ export interface JapaneseSearchToolOptions {
 
 // Built once per maxLimit, not per request: the MCP SDK hands every HTTP request a fresh McpServer,
 // and constructing this chained Zod schema (about 30 clones) dominated the per-request registration cost.
-const inputSchemaByMaxLimit = new Map<number, ReturnType<typeof buildInputSchema>>();
+const inputSchemaByMaxLimit = new Map<number, Pick<ReturnType<typeof buildInputSchema>, "~standard">>();
 
 function buildInputSchema(maxLimit: number) {
   return z.object({
@@ -25,10 +25,37 @@ function buildInputSchema(maxLimit: number) {
   });
 }
 
-function japaneseInputSchema(maxLimit: number): ReturnType<typeof buildInputSchema> {
+function japaneseInputSchema(maxLimit: number): Pick<ReturnType<typeof buildInputSchema>, "~standard"> {
   let schema = inputSchemaByMaxLimit.get(maxLimit);
   if (!schema) {
-    schema = buildInputSchema(maxLimit);
+    const base = buildInputSchema(maxLimit);
+    const jsonSchema = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          minLength: 1,
+          maxLength: 500,
+          description: "Japanese words or phrase, up to 500 Unicode code points.",
+        },
+        mode: { type: "string", enum: ["any", "all"], description: "any: match any query token; all: require every query token. Defaults to any." },
+        label: { type: "string", description: "Optional exact source label (source_images.file_path). Use to restrict the search to one book." },
+        reviewed: { type: "boolean", description: "true matches reviewed/protected rows (any non-zero value or NULL); false matches only reviewed=0 rows." },
+        limit: { type: "integer", minimum: 1, maximum: maxLimit },
+        offset: { type: "integer", minimum: 0, maximum: 100000 },
+      },
+      required: ["query"],
+    };
+    schema = {
+      "~standard": {
+        ...base["~standard"],
+        jsonSchema: {
+          input: () => jsonSchema,
+          output: () => jsonSchema,
+        },
+      },
+    } as Pick<ReturnType<typeof buildInputSchema>, "~standard">;
     inputSchemaByMaxLimit.set(maxLimit, schema);
   }
   return schema;
