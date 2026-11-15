@@ -454,7 +454,7 @@ test("Japanese MCP query limit counts Unicode code points rather than UTF-16 cod
       headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "tools/list" }),
     });
-    const listData = (await listResponse.text()).split("\\n").find((line) => line.startsWith("data: "))!;
+    const listData = (await listResponse.text()).split("\n").find((line) => line.startsWith("data: "))!;
     const listedTools = (JSON.parse(listData.slice(6)) as { result: { tools: Array<{ name: string; inputSchema: { properties: Record<string, { maxLength?: number }> } }> } }).result.tools;
     const japaneseTool = listedTools.find((tool) => tool.name === "search_ocr_japanese");
     assert.ok(japaneseTool, "Japanese search tool must be registered");
