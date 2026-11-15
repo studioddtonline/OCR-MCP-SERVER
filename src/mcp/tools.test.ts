@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import type { AppConfig } from "../config/types.js";
 import type { OcrRepository } from "../features/ocr/repository.js";
-import type { OcrSearch } from "ocr-search";
+import { SearchQueryValidationError, type OcrSearch } from "ocr-search";
 import type { McpRuntimeDependencies } from "./dependencies.js";
 import { ClientSafeError } from "../shared/errors.js";
 import { testConfig } from "../../test/support/oauth-kit.js";
@@ -357,6 +357,136 @@ test("search_ocr_japanese delegates to the OCR-SEARCH Japanese API", async () =>
     assert.equal(result.isError, undefined);
     assert.deepEqual(JSON.parse(result.content.map((part) => part.text ?? "").join("\n")), expected);
     assert.deepEqual(received, { query: "東京", mode: "all", label: undefined, reviewed: undefined, limit: 5, offset: 2 });
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+
+test("OCR-SEARCH base errors are mapped to client-safe messages for standard and Japanese search", async () => {
+  const config: AppConfig = {
+    ...testConfig,
+    auth: { mode: "none" },
+    japaneseSearch: {
+      enabled: true,
+      indexPath: "/tmp/japanese-index.sqlite",
+      extensionPath: "/tmp/sqlite-vaporetto.so",
+      busyTimeoutMs: 500,
+      maxLimit: 20,
+    },
+  };
+  const expectedMessage = "A search term must contain at most 500 Unicode code points.";
+  const search = {
+    search: async () => { throw new SearchQueryValidationError(expectedMessage); },
+    searchJapanese: async () => { throw new SearchQueryValidationError(expectedMessage); },
+    close: () => undefined,
+  } as unknown as OcrSearch;
+  const runtime = createTestMcpRuntime({
+    getById: () => null,
+    listLabels: () => [],
+    getStats: () => ({ total: 0, reviewed: 0, unreviewed: 0, labels: 0 }),
+  } as unknown as OcrRepository, { search: { repository: search } });
+  const server = startHttpServer(config, createMcpHttpHandler(runtime, config));
+  await once(server, "listening");
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+  try {
+    for (const [id, name, args] of [
+      [1, "search_ocr", { query: "sample" }],
+      [2, "search_ocr_japanese", { query: "東京" }],
+    ] as const) {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }),
+      });
+      const data = (await response.text()).split("\n").find((line) => line.startsWith("data: "))!;
+      const result = (JSON.parse(data.slice(6)) as { result: { isError?: boolean; content: Array<{ text?: string }> } }).result;
+      assert.equal(result.isError, true, name);
+      assert.deepEqual(JSON.parse(result.content.map((part) => part.text ?? "").join("\n")), { error: expectedMessage }, name);
+    }
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("Japanese MCP query limit counts Unicode code points rather than UTF-16 code units", async () => {
+  const config: AppConfig = {
+    ...testConfig,
+    auth: { mode: "none" },
+    japaneseSearch: {
+      enabled: true,
+      indexPath: "/tmp/japanese-index.sqlite",
+      extensionPath: "/tmp/sqlite-vaporetto.so",
+      busyTimeoutMs: 500,
+      maxLimit: 20,
+    },
+  };
+  const acceptedQuery = "😀".repeat(500);
+  let receivedQuery: string | undefined;
+  let searchCalls = 0;
+  const search = {
+    search: async () => ({ results: [], returned: 0, offset: 0, limit: 20, nextAfterId: null }),
+    searchJapanese: async (request: { query: string }) => {
+      searchCalls++;
+      receivedQuery = request.query;
+      return {
+        query: request.query, mode: "any", queryTokens: [], returned: 0, limit: 20,
+        offset: 0, nextOffset: null,
+        index: { tokenizer: "vaporetto-pretokenized-unicode61", indexedAt: "2026-11-15T00:00:00.000Z", indexedRecords: 0, sourceMaxId: 0 },
+        results: [],
+      };
+    },
+    close: () => undefined,
+  } as unknown as OcrSearch;
+  const runtime = createTestMcpRuntime({
+    getById: () => null,
+    listLabels: () => [],
+    getStats: () => ({ total: 0, reviewed: 0, unreviewed: 0, labels: 0 }),
+  } as unknown as OcrRepository, { search: { repository: search } });
+  const server = startHttpServer(config, createMcpHttpHandler(runtime, config));
+  await once(server, "listening");
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+  try {
+    const listResponse = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "tools/list" }),
+    });
+    const listData = (await listResponse.text()).split("\n").find((line) => line.startsWith("data: "))!;
+    const listedTools = (JSON.parse(listData.slice(6)) as { result: { tools: Array<{ name: string; inputSchema: { properties: Record<string, { maxLength?: number }> } }> } }).result.tools;
+    const japaneseTool = listedTools.find((tool) => tool.name === "search_ocr_japanese");
+    assert.ok(japaneseTool, "Japanese search tool must be registered");
+    const querySchema = japaneseTool.inputSchema.properties.query;
+    assert.ok(querySchema, "the Japanese query property must be advertised");
+    assert.equal(querySchema.maxLength, 500, "the advertised schema must use the Unicode code-point limit");
+
+    const validResponse = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({
+        jsonrpc: "2.0", id: 1, method: "tools/call",
+        params: { name: "search_ocr_japanese", arguments: { query: acceptedQuery } },
+      }),
+    });
+    const validData = (await validResponse.text()).split("\n").find((line) => line.startsWith("data: "))!;
+    const validResult = (JSON.parse(validData.slice(6)) as { result: { isError?: boolean } }).result;
+    assert.equal(validResult.isError, undefined);
+    assert.equal(receivedQuery, acceptedQuery);
+    assert.equal(searchCalls, 1);
+
+    const invalidResponse = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({
+        jsonrpc: "2.0", id: 2, method: "tools/call",
+        params: { name: "search_ocr_japanese", arguments: { query: "😀".repeat(501) } },
+      }),
+    });
+    const invalidBody = await invalidResponse.text();
+    assert.ok(!invalidResponse.ok || /error|invalid|validation|500|length|code point|too_big/i.test(invalidBody), "the 501-code-point query must be rejected");
+    assert.equal(searchCalls, 1, "the repository must not be called for a query over 500 code points");
   } finally {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
