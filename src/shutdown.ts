@@ -1,4 +1,4 @@
-import { EventEmitter } from "node:events";
+import type { EventEmitter } from "node:events";
 import type { Server } from "node:http";
 import type { Runtime } from "./app/runtime.js";
 
