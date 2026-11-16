@@ -3,6 +3,7 @@ import { loadConfig } from "./config/load.js";
 import { bootstrap } from "./app/bootstrap.js";
 import { startHttpServer } from "./http/server.js";
 import { createMcpHttpHandler } from "./mcp/http-handler.js";
+import { installShutdownHandlers } from "./shutdown.js";
 
 function main() {
   const config = loadConfig();
