@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import { createServer } from "node:http";
-import { get } from "node:http";
+import { Agent, get } from "node:http";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import { installShutdownHandlers } from "./shutdown.js";
@@ -25,7 +25,7 @@ test("graceful shutdown closes idle keep-alive connections and exits zero", asyn
   const result = waitForExit();
   let closeCalls = 0;
   const base = await listen(server);
-  const agent = new (await import("node:http")).Agent({ keepAlive: true });
+  const agent = new Agent({ keepAlive: true });
 
   try {
     await new Promise<void>((resolve, reject) => {
