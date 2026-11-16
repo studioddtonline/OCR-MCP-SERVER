@@ -46,23 +46,60 @@ export function createOAuthContext(
   const requestedScopes = (raw: string | null | undefined): string[] => [
     ...new Set([SCOPE_READ, ...parseScopes(raw).filter((scope) => KNOWN_SCOPES.has(scope) && allowedScopes.has(scope))]),
   ];
+  function logAuthzRejection(clientId: string, reason: string): void {
+    const client = looksLikeUrlClientId(clientId) ? "CIMD-client" : "registered-client";
+    console.warn("[oauth/authorize] request rejected", { client, reason });
+  }
+
   async function parseAuthzRequest(get: StringGetter): Promise<AuthzRequest | undefined> {
     const clientId = get("client_id") ?? "";
     const redirectUri = get("redirect_uri") ?? "";
     const challenge = get("code_challenge") ?? "";
     const state = get("state") ?? "";
     const client = await resolveClient(clientId);
-    if (
-      !client ||
-      !client.redirectUris.includes(redirectUri) ||
-      !allowedRedirects.has(redirectUri) ||
-      get("response_type") !== "code" ||
-      get("code_challenge_method") !== "S256" ||
-      !/^[A-Za-z0-9_-]{43,128}$/.test(challenge) ||
-      !state ||
-      state.length > 2048 ||
-      !resourceOk(get("resource"))
-    ) return undefined;
+
+    if (!client) {
+      logAuthzRejection(clientId, "client_not_resolved");
+      return undefined;
+    }
+    if (looksLikeUrlClientId(clientId)) {
+      console.info("[oauth/cimd] metadata accepted", {
+        client: new URL(clientId).host,
+        allowedRedirectUriCount: client.redirectUris.length,
+      });
+    }
+    if (!client.redirectUris.includes(redirectUri)) {
+      logAuthzRejection(clientId, "redirect_uri_not_in_client_metadata");
+      return undefined;
+    }
+    if (!allowedRedirects.has(redirectUri)) {
+      logAuthzRejection(clientId, "redirect_uri_not_allowed_by_server");
+      return undefined;
+    }
+    if (get("response_type") !== "code") {
+      logAuthzRejection(clientId, "unsupported_response_type");
+      return undefined;
+    }
+    if (get("code_challenge_method") !== "S256") {
+      logAuthzRejection(clientId, "unsupported_code_challenge_method");
+      return undefined;
+    }
+    if (!/^[A-Za-z0-9_-]{43,128}$/.test(challenge)) {
+      logAuthzRejection(clientId, "invalid_code_challenge");
+      return undefined;
+    }
+    if (!state) {
+      logAuthzRejection(clientId, "missing_state");
+      return undefined;
+    }
+    if (state.length > 2048) {
+      logAuthzRejection(clientId, "state_too_long");
+      return undefined;
+    }
+    if (!resourceOk(get("resource"))) {
+      logAuthzRejection(clientId, "resource_mismatch");
+      return undefined;
+    }
     return { client, clientId, redirectUri, challenge, state, requested: requestedScopes(get("scope")) };
   }
   const invalidAuthzPage = () => render(

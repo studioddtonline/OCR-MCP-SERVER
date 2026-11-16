@@ -73,9 +73,15 @@ OCR DB または元画像ストレージの障害では、通常 HTTP 接続全�
 
 リダイレクト URI が `oauth.allowedRedirectUris` に完全一致で含まれるか確認してください。許可済み URI の origin は同意画面の CSP `form-action` に追加されます。Caddy 等の reverse proxy が CSP を上書きしていないかも確認します。
 
-### CIMD / DCR 登録で拒否される
+### CIMD / DCR 登録または認可リクエストで拒否される
 
-ログの `[oauth/cimd]` または `[oauth/register]` の拒否理由を確認します。主な条件は `client_id` と CIMD 文書 URL の一致、`oauth.cimdAllowedHosts`、`oauth.allowedRedirectUris` の許可リスト、HTTPS（またはループバック HTTP）の要件です。古い DCR 登録を完全に消す必要がある場合、OAuth DB を削除すると登録・トークン状態も失われます。静的トークン DB とは別ファイルなので、影響を理解してから実施してください。
+ログの `[oauth/cimd]`、`[oauth/authorize]`、`[oauth/register]` を確認します。
+
+- `[oauth/cimd] metadata accepted` は、CIMD 文書の取得・検証とクライアント登録が通ったことを示します。これに続いて `[oauth/authorize] request rejected` が出る場合、CIMD 自体ではなく認可パラメーターの検証で拒否されています。
+- `[oauth/cimd] rejected` は、CIMD 文書の取得・検証またはクライアント登録が拒否されたことを示します。同じ client_id の拒否ログは30秒間抑制される場合があります。
+- `[oauth/authorize] request rejected` の `reason` は `redirect_uri_not_in_client_metadata`、`unsupported_response_type`、`unsupported_code_challenge_method`、`invalid_code_challenge`、`missing_state`、`state_too_long`、`resource_mismatch` など、認可パラメーターの拒否箇所を示します。
+
+診断ログには client の区分と拒否理由だけを記録し、`state`、PKCE challenge、認可コードなどの値は出力しません。主な条件は `client_id` と CIMD 文書 URL の一致、`oauth.cimdAllowedHosts`、`oauth.allowedRedirectUris` の許可リスト、HTTPS（またはループバック HTTP）の要件です。古い DCR 登録を完全に消す必要がある場合、OAuth DB を削除すると登録・トークン状態も失われます。静的トークン DB とは別ファイルなので、影響を理解してから実施してください。
 
 ## 元画像
 
