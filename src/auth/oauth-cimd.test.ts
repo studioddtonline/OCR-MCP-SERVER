@@ -5,6 +5,8 @@ import {
   authorizeUrl, codeFrom, exchangeCode, pkcePair, postAuthorize, setupOAuth,
 } from "../../test/support/oauth-kit.js";
 
+const OTHER_CALLBACK = "https://other.example/callback";
+
 const goodDoc = {
   client_id: CIMD_CLIENT_ID, client_name: "Claude",
   redirect_uris: [CALLBACK, "http://localhost/callback"], token_endpoint_auth_method: "none",
