@@ -3,6 +3,7 @@ import { loadConfig } from "./config/load.js";
 import { bootstrap } from "./app/bootstrap.js";
 import { startHttpServer } from "./http/server.js";
 import { createMcpHttpHandler } from "./mcp/http-handler.js";
+import { installShutdownHandlers } from "./shutdown.js";
 
 function main() {
   const config = loadConfig();
@@ -10,14 +11,7 @@ function main() {
   const mcpHandler = createMcpHttpHandler(runtime, config);
   const server = startHttpServer(config, mcpHandler, runtime.oauth);
 
-  const shutdown = () => {
-    server.close(() => {
-      runtime.close();
-      process.exit(0);
-    });
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  installShutdownHandlers(server, runtime);
 
   console.error(`OCR MCP server (auth: ${config.auth.mode}) listening on ${config.server.host}:${config.server.port}; MCP path ${config.server.mcpPath}`);
 }
