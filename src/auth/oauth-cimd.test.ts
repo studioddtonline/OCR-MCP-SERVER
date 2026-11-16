@@ -112,3 +112,50 @@ test("DCR fallback: accepts subset grant_types, rejects redirect URIs outside th
     assert.deepEqual(await bad!.json(), { error: "invalid_redirect_uri" });
   } finally { t.cleanup(); }
 });
+
+test("CIMD success and authorization parameter rejection are logged separately without logging secrets", async () => {
+  const t = setupOAuth({ cimdDoc: goodDoc });
+  const info: unknown[][] = [];
+  const warnings: unknown[][] = [];
+  const originalInfo = console.info;
+  const originalWarn = console.warn;
+  console.info = (...args: unknown[]) => { info.push(args); };
+  console.warn = (...args: unknown[]) => { warnings.push(args); };
+  try {
+    const { challenge } = pkcePair();
+    const badResponseType = authorizeUrl(CIMD_CLIENT_ID, challenge, {
+      response_type: "token",
+      state: "do-not-log-this-state",
+    });
+    const first = await t.handler.fetch(new Request(badResponseType));
+    assert.equal(first?.status, 400);
+
+    const badRedirect = authorizeUrl(CIMD_CLIENT_ID, challenge, {
+      redirect_uri: OTHER_CALLBACK,
+      state: "another-secret-state",
+    });
+    const second = await t.handler.fetch(new Request(badRedirect));
+    assert.equal(second?.status, 400);
+
+    assert.ok(info.some((args) =>
+      args[0] === "[oauth/cimd] metadata accepted" &&
+      (args[1] as { client?: string })?.client === "claude.ai"
+    ), "validated CIMD metadata should be explicitly logged");
+    assert.ok(warnings.some((args) =>
+      args[0] === "[oauth/authorize] request rejected" &&
+      (args[1] as { reason?: string })?.reason === "unsupported_response_type"
+    ), "response_type rejection should have a distinct reason");
+    assert.ok(warnings.some((args) =>
+      args[0] === "[oauth/authorize] request rejected" &&
+      (args[1] as { reason?: string })?.reason === "redirect_uri_not_in_client_metadata"
+    ), "redirect_uri mismatch should have a distinct reason");
+
+    const serialized = JSON.stringify([...info, ...warnings]);
+    assert.doesNotMatch(serialized, /do-not-log-this-state|another-secret-state|vvvvvvvvvvvvvvvvvvvv/,
+      "state and PKCE challenge values must not be written to logs");
+  } finally {
+    console.info = originalInfo;
+    console.warn = originalWarn;
+    t.cleanup();
+  }
+});
