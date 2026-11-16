@@ -47,7 +47,7 @@ export function createOAuthContext(
     ...new Set([SCOPE_READ, ...parseScopes(raw).filter((scope) => KNOWN_SCOPES.has(scope) && allowedScopes.has(scope))]),
   ];
   function logAuthzRejection(clientId: string, reason: string): void {
-    const client = looksLikeUrlClientId(clientId) ? new URL(clientId).host : "registered-client";
+    const client = looksLikeUrlClientId(clientId) ? "CIMD-client" : "registered-client";
     console.warn("[oauth/authorize] request rejected", { client, reason });
   }
 
