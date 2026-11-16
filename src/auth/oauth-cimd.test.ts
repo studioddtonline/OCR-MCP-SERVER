@@ -151,8 +151,9 @@ test("CIMD success and authorization parameter rejection are logged separately w
     ), "redirect_uri mismatch should have a distinct reason");
 
     const serialized = JSON.stringify([...info, ...warnings]);
-    assert.doesNotMatch(serialized, /do-not-log-this-state|another-secret-state|vvvvvvvvvvvvvvvvvvvv/,
-      "state and PKCE challenge values must not be written to logs");
+    assert.equal(serialized.includes("do-not-log-this-state"), false);
+    assert.equal(serialized.includes("another-secret-state"), false);
+    assert.equal(serialized.includes(challenge), false, "state and PKCE challenge values must not be written to logs");
   } finally {
     console.info = originalInfo;
     console.warn = originalWarn;
