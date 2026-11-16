@@ -59,6 +59,7 @@ test("grace-period expiry force-closes an active HTTP connection", async () => {
 
   const requestSeen = once(server, "request");
   const request = get(base);
+  const requestError = once(request, "error");
   await requestSeen;
 
   try {
@@ -70,6 +71,8 @@ test("grace-period expiry force-closes an active HTTP connection", async () => {
     signals.emit("SIGINT");
 
     assert.equal(await result.promise, 1);
+    const [error] = await requestError;
+    assert.equal((error as NodeJS.ErrnoException).code, "ECONNRESET");
     assert.equal(closeCalls, 1);
   } finally {
     request.destroy();
@@ -85,6 +88,7 @@ test("a second termination signal forces shutdown immediately and closes runtime
   const base = await listen(server);
   const requestSeen = once(server, "request");
   const request = get(base);
+  const requestError = once(request, "error");
   await requestSeen;
 
   try {
@@ -97,6 +101,8 @@ test("a second termination signal forces shutdown immediately and closes runtime
     signals.emit("SIGINT");
 
     assert.equal(await result.promise, 1);
+    const [error] = await requestError;
+    assert.equal((error as NodeJS.ErrnoException).code, "ECONNRESET");
     assert.equal(closeCalls, 1);
   } finally {
     request.destroy();
