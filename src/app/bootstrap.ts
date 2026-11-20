@@ -20,7 +20,7 @@ import { describeForLog } from "../shared/errors.js";
 //   - 認証 DB が使えないときは MCP を 503 で閉じる (無認証公開にはしない)。
 //   - 起動時に開けなかった DB は、再起動するまで復旧を試みない。
 
-export const MINIMUM_SUPPORTED_NODE_VERSION = "22.16.0";
+export const MINIMUM_SUPPORTED_NODE_VERSION = "24.0.0";
 
 export interface BootstrapOptions {
   log?: (...args: unknown[]) => void;
